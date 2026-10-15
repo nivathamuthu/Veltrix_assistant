@@ -1,8 +1,23 @@
 """Database layer: connections, transactions, migrations, reads, sessions."""
-from app.db.connection import Database
-from app.db.migrations import NEW_TABLES, run_migrations
 from app.db.chunks import count_chunks, load_chunks, replace_chunks
-from app.db.models import Chunk, Employee, LeaveBalance, LeaveRequest, Segment
+from app.db.connection import Database
+from app.db.holidays import get_public_dates, list_calendars, load_holidays, replace_holiday_data
+from app.db.migrations import NEW_TABLES, run_migrations
+from app.db.models import (
+    CALENDAR_NO_PUBLIC,
+    CALENDAR_OK,
+    CALENDAR_UNAVAILABLE,
+    KIND_OPTIONAL,
+    KIND_PUBLIC,
+    KIND_UNKNOWN,
+    CalendarRow,
+    Chunk,
+    Employee,
+    HolidayRow,
+    LeaveBalance,
+    LeaveRequest,
+    Segment,
+)
 from app.db.queries import (
     get_balance,
     get_direct_reports,
@@ -19,9 +34,17 @@ from app.db.sessions import (
 )
 
 __all__ = [
+    "CALENDAR_NO_PUBLIC",
+    "CALENDAR_OK",
+    "CALENDAR_UNAVAILABLE",
+    "CalendarRow",
     "Chunk",
     "Database",
     "Employee",
+    "HolidayRow",
+    "KIND_OPTIONAL",
+    "KIND_PUBLIC",
+    "KIND_UNKNOWN",
     "LeaveBalance",
     "LeaveRequest",
     "NEW_TABLES",
@@ -31,13 +54,17 @@ __all__ = [
     "SessionCheck",
     "claim_or_check_session",
     "count_chunks",
-    "load_chunks",
-    "replace_chunks",
     "get_balance",
     "get_direct_reports",
     "get_employee",
     "get_pii_values",
+    "get_public_dates",
     "get_team_requests",
+    "list_calendars",
     "list_requests",
+    "load_chunks",
+    "load_holidays",
+    "replace_chunks",
+    "replace_holiday_data",
     "run_migrations",
 ]

@@ -44,12 +44,12 @@ class SectionBuilder:
         self._page = page
         self._paragraphs.append(text)
 
-    def table(self, text: str, page: int | None = None) -> None:
+    def table(self, text: str, page: int | None = None, rows: tuple = ()) -> None:
         text = text.strip()
         if not text:
             return
         self.flush()
-        self.sections.append(Section(self._heading, page, text, "table"))
+        self.sections.append(Section(self._heading, page, text, "table", rows))
         self._page = page
 
     def flush(self) -> None:

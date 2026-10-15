@@ -13,20 +13,38 @@ from __future__ import annotations
 from app.db.connection import Database
 
 # Tables this module owns (the existing three are deliberately absent).
-NEW_TABLES = ("holidays", "chunks", "sessions", "pending_proposals")
+NEW_TABLES = ("holidays", "holiday_calendars", "chunks", "sessions", "pending_proposals")
 
 MIGRATIONS: tuple[str, ...] = (
-    # Public holidays extracted from calendar documents at ingestion.
+    # Holidays extracted from calendar documents at ingestion (rebuilt at startup).
+    # Only rows with kind = 'public' may count as non-working days.
     """
     CREATE TABLE IF NOT EXISTS holidays (
-        region  TEXT NOT NULL,
-        date    TEXT NOT NULL,          -- YYYY-MM-DD
-        name    TEXT NOT NULL,
-        doc_id  TEXT NOT NULL,          -- calendar document it came from
+        region          TEXT NOT NULL,
+        date            TEXT NOT NULL,          -- YYYY-MM-DD
+        name            TEXT NOT NULL,
+        doc_id          TEXT NOT NULL,          -- calendar document it came from
+        kind            TEXT NOT NULL DEFAULT 'unknown',  -- public | optional | unknown
+        effective_date  TEXT NOT NULL DEFAULT '',          -- of the calendar document
+        regions         TEXT NOT NULL DEFAULT '[]',        -- JSON, of the calendar document
         PRIMARY KEY (region, date, doc_id)
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_holidays_doc ON holidays (doc_id)",
+    # One row per calendar document in the manifest, whether or not extraction worked.
+    """
+    CREATE TABLE IF NOT EXISTS holiday_calendars (
+        doc_id          TEXT PRIMARY KEY,
+        effective_date  TEXT NOT NULL,
+        regions         TEXT NOT NULL,          -- JSON array
+        access_level    TEXT NOT NULL,
+        status          TEXT NOT NULL,          -- ok | no_public_holidays | unavailable
+        public_count    INTEGER NOT NULL DEFAULT 0,
+        optional_count  INTEGER NOT NULL DEFAULT 0,
+        unknown_count   INTEGER NOT NULL DEFAULT 0,
+        skipped_rows    INTEGER NOT NULL DEFAULT 0
+    )
+    """,
     # Chunk text plus the manifest metadata every chunk carries.
     """
     CREATE TABLE IF NOT EXISTS chunks (
@@ -67,10 +85,23 @@ MIGRATIONS: tuple[str, ...] = (
 # A database first migrated in Phase 2 has a ``chunks`` table without
 # token_count. Adding a column to OUR OWN table is allowed (rule 9 protects the
 # given tables); it is guarded so repeated runs do nothing.
-_SQL_HAS_TOKEN_COUNT = (
-    "SELECT 1 FROM pragma_table_info('chunks') WHERE name = 'token_count'"
-)
+#
+# The same applies to ``holidays`` (Phase 3c adds kind, effective_date, regions).
+# A legacy row would default to kind 'unknown', which can never count as a
+# public holiday.
+_SQL_HAS_COLUMN = "SELECT 1 FROM pragma_table_info(?) WHERE name = ?"
 _SQL_ADD_TOKEN_COUNT = "ALTER TABLE chunks ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0"
+_SQL_ADD_HOLIDAY_KIND = "ALTER TABLE holidays ADD COLUMN kind TEXT NOT NULL DEFAULT 'unknown'"
+_SQL_ADD_HOLIDAY_EFFECTIVE = "ALTER TABLE holidays ADD COLUMN effective_date TEXT NOT NULL DEFAULT ''"
+_SQL_ADD_HOLIDAY_REGIONS = "ALTER TABLE holidays ADD COLUMN regions TEXT NOT NULL DEFAULT '[]'"
+
+# (table, column, statement that adds it), applied only where the column is missing.
+_ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("chunks", "token_count", _SQL_ADD_TOKEN_COUNT),
+    ("holidays", "kind", _SQL_ADD_HOLIDAY_KIND),
+    ("holidays", "effective_date", _SQL_ADD_HOLIDAY_EFFECTIVE),
+    ("holidays", "regions", _SQL_ADD_HOLIDAY_REGIONS),
+)
 
 
 def run_migrations(db: Database) -> None:
@@ -78,5 +109,6 @@ def run_migrations(db: Database) -> None:
     with db.transaction() as conn:
         for statement in MIGRATIONS:
             conn.execute(statement)
-        if conn.execute(_SQL_HAS_TOKEN_COUNT).fetchone() is None:
-            conn.execute(_SQL_ADD_TOKEN_COUNT)
+        for table, column, add_statement in _ADDED_COLUMNS:
+            if conn.execute(_SQL_HAS_COLUMN, (table, column)).fetchone() is None:
+                conn.execute(add_statement)

@@ -18,6 +18,9 @@ class Section:
     page: int | None  # 1-based page for PDFs, None for other formats
     text: str
     kind: Kind = "text"
+    # Table sections only: the same rows as ``text`` but as (column header, value)
+    # pairs. Not part of equality or repr; ``text`` stays what gets indexed.
+    rows: tuple = field(default=(), repr=False, compare=False)
 
 
 @dataclass

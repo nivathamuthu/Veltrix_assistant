@@ -45,7 +45,10 @@ def test_migrations_run_twice_without_error_and_change_nothing(core_db):
 def test_migrations_keep_data_in_new_tables(synthetic_db):
     run_migrations(synthetic_db)
     with synthetic_db.transaction() as conn:
-        conn.execute("INSERT INTO holidays VALUES ('IN', '2026-01-26', 'Republic Day', 'DOC-X')")
+        conn.execute(
+            "INSERT INTO holidays (region, date, name, doc_id) "
+            "VALUES ('IN', '2026-01-26', 'Synthetic Day', 'DOC-X')"
+        )
     run_migrations(synthetic_db)  # a restart must not wipe or fail on existing rows
     with synthetic_db.read() as conn:
         assert conn.execute("SELECT COUNT(*) FROM holidays").fetchone()[0] == 1
@@ -95,7 +98,15 @@ def test_foreign_keys_still_consistent_after_migration(core_db):
 @pytest.mark.parametrize(
     "table, expected",
     [
-        ("holidays", ["region", "date", "name", "doc_id"]),
+        (
+            "holidays",
+            ["region", "date", "name", "doc_id", "kind", "effective_date", "regions"],
+        ),
+        (
+            "holiday_calendars",
+            ["doc_id", "effective_date", "regions", "access_level", "status", "public_count",
+             "optional_count", "unknown_count", "skipped_rows"],
+        ),
         (
             "chunks",
             ["chunk_id", "doc_id", "locator", "regions", "effective_date", "doc_type", "access_level",
@@ -155,6 +166,26 @@ def test_chunks_table_from_phase_2_gains_token_count_without_losing_rows(synthet
     assert list(cols).count("token_count") == 1
     with synthetic_db.read() as conn:
         assert conn.execute("SELECT chunk_id, token_count FROM chunks").fetchall()[0]["token_count"] == 0
+
+
+def test_holidays_table_from_phase_2_gains_its_new_columns_and_old_rows_are_never_public(synthetic_db):
+    """The Phase 2 table had four columns. The upgrade is in place and idempotent, and a
+    legacy row defaults to kind 'unknown': it cannot be mistaken for a public holiday."""
+    with synthetic_db.transaction() as conn:
+        conn.execute(
+            "CREATE TABLE holidays (region TEXT NOT NULL, date TEXT NOT NULL, name TEXT NOT NULL,"
+            " doc_id TEXT NOT NULL, PRIMARY KEY (region, date, doc_id))"
+        )
+        conn.execute("INSERT INTO holidays VALUES ('IN', '2026-01-26', 'Legacy row', 'DOC-OLD')")
+    run_migrations(synthetic_db)
+    run_migrations(synthetic_db)
+    cols = _columns(synthetic_db, "holidays")
+    assert sorted(cols, key=lambda c: cols[c]["cid"]) == [
+        "region", "date", "name", "doc_id", "kind", "effective_date", "regions",
+    ]
+    with synthetic_db.read() as conn:
+        row = conn.execute("SELECT * FROM holidays").fetchone()
+    assert (row["name"], row["kind"], row["effective_date"], row["regions"]) == ("Legacy row", "unknown", "", "[]")
 
 
 def test_startup_runs_migrations_and_never_creates_a_missing_db(

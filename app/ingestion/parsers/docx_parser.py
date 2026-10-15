@@ -15,7 +15,7 @@ from docx.text.paragraph import Paragraph
 
 from app.ingestion.parsers.builder import SectionBuilder, clean
 from app.ingestion.parsers.models import ParsedDocument
-from app.ingestion.parsers.tables import rows_to_text
+from app.ingestion.parsers.tables import TableData, render_table
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
@@ -72,9 +72,9 @@ def _has_header(table: Table) -> bool:
     return bool(cells) and all(_is_bold(c) for c in cells)
 
 
-def _table_text(table: Table) -> str:
+def _table_data(table: Table) -> TableData:
     rows = [[cell.text for cell in _row_cells(row)] for row in table.rows]
-    return rows_to_text(rows, _has_header(table))
+    return render_table(rows, _has_header(table))
 
 
 def parse_docx(path: str | Path) -> ParsedDocument:
@@ -83,7 +83,8 @@ def parse_docx(path: str | Path) -> ParsedDocument:
     builder = SectionBuilder()
     for block in _blocks(document.element.body, document):
         if isinstance(block, Table):
-            builder.table(_table_text(block))
+            data = _table_data(block)
+            builder.table(data.text, None, data.rows)
             continue
         text = clean(block.text)
         if not text:

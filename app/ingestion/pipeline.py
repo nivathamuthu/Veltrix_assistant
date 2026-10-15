@@ -9,10 +9,11 @@ Order (the service answers /health with 503 until the last step):
 4. parse + OCR + chunk every manifest document (bad documents are skipped);
 5. clear and refill the ``chunks`` table, build the BM25 + vector index from
    scratch, write it to INDEX_DIR;
-6. mark ready.
+6. extract holidays from the parsed calendar documents and rebuild the
+   holidays tables (3c);
+7. mark ready.
 
-Holiday extraction (3c) plugs in after step 5. Nothing here hard-codes corpus
-facts.
+Nothing here hard-codes corpus facts.
 """
 from __future__ import annotations
 
@@ -22,9 +23,10 @@ import time
 from dataclasses import dataclass, field
 
 from app.config import Settings
-from app.db import Database, get_pii_values, replace_chunks, run_migrations
+from app.db import Database, get_pii_values, replace_chunks, replace_holiday_data, run_migrations
 from app.ingestion.corpus import CorpusLoad, load_corpus
 from app.ingestion.embeddings import Embedder, FastEmbedEmbedder
+from app.ingestion.holidays import Extraction, extract_holidays
 from app.ingestion.index import HybridIndex
 from app.ingestion.manifest import ManifestError
 from app.ingestion.state import IngestionState
@@ -119,6 +121,19 @@ def build_search_index(settings: Settings, db: Database, embedder: Embedder) -> 
     return BuiltIndex(index=index, corpus=corpus, seconds=seconds)
 
 
+def build_holidays(db: Database, corpus: CorpusLoad) -> Extraction:
+    """Extract holidays from the already-parsed calendar documents and rebuild the
+    ``holidays`` and ``holiday_calendars`` tables from scratch (clear and refill,
+    in one transaction, so a rebuild never leaves duplicates or a half-built set)."""
+    extraction = extract_holidays(corpus.entries, corpus.documents)
+    try:
+        with db.transaction() as conn:
+            replace_holiday_data(conn, extraction.calendars, extraction.holidays)
+    except sqlite3.Error as exc:
+        raise IngestionError(f"cannot write the holidays tables ({type(exc).__name__})") from exc
+    return extraction
+
+
 def run_ingestion(
     settings: Settings, state: IngestionState, embedder: Embedder | None = None
 ) -> None:
@@ -140,7 +155,9 @@ def run_ingestion(
             embedder = FastEmbedEmbedder(settings.embed_model, settings.embed_cache_dir)
         model_load_seconds = time.monotonic() - load_started
         built = build_search_index(settings, db, embedder)
-        # Phase 3c plugs in here: holiday extraction from the calendar chunks.
+        holiday_started = time.monotonic()
+        extraction = build_holidays(db, built.corpus)
+        built.seconds["extract_holidays"] = time.monotonic() - holiday_started
     except Exception as exc:  # noqa: BLE001 - any failure must leave /health at 503
         state.mark_failed(f"{type(exc).__name__}: {exc}")
         log.error("ingestion failed: %s", type(exc).__name__)
@@ -156,6 +173,8 @@ def run_ingestion(
             "skipped_empty": built.corpus.skipped_empty,
             "unmanifested_files": built.corpus.unmanifested_files,
             "chunks_per_doc": built.corpus.chunks_per_doc,
+            "calendars": extraction.calendars,
+            "holiday_rows": len(extraction.holidays),
         },
     )
     log.info(

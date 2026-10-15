@@ -11,6 +11,7 @@ become ``Row: Document ID | ...`` lines instead.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 from app.ingestion.parsers.builder import clean
@@ -18,9 +19,21 @@ from app.ingestion.parsers.builder import clean
 ROW_PREFIX = "Row:"
 CELL_SEPARATOR = " | "
 
+# One table row as ``(column header, value)`` per non-empty cell. The header is
+# "" for a table without a header row. Consumers that need to know which value
+# belongs to which column (Phase 3c holiday extraction) read this instead of
+# trying to split the rendered text back apart.
+TableRow = tuple[tuple[str, str], ...]
 
-def rows_to_text(rows: Iterable[Sequence[str | None]], has_header: bool) -> str:
-    """Render table rows as text, one ``Row: ...`` line per row.
+
+@dataclass(frozen=True)
+class TableData:
+    text: str  # row-wise text, as indexed for retrieval
+    rows: tuple[TableRow, ...]  # the same rows, structured
+
+
+def render_table(rows: Iterable[Sequence[str | None]], has_header: bool) -> TableData:
+    """Both forms of a table, built from one pass so they can never disagree.
 
     ``has_header``: treat the first row as column names (repeated in every
     following row). Needs at least one more row; otherwise the table is
@@ -30,24 +43,32 @@ def rows_to_text(rows: Iterable[Sequence[str | None]], has_header: bool) -> str:
     cleaned = [[clean(cell) for cell in row] for row in rows]
     cleaned = [row for row in cleaned if any(row)]
     if not cleaned:
-        return ""
+        return TableData("", ())
 
-    lines: list[str] = []
+    structured: list[TableRow] = []
     if has_header and len(cleaned) >= 2:
         header, body = cleaned[0], cleaned[1:]
         for row in body:
-            parts = []
-            for index, value in enumerate(row):
-                if not value:
-                    continue
-                name = header[index] if index < len(header) else ""
-                parts.append(f"{name} {value}".strip())
-            if parts:
-                lines.append(f"{ROW_PREFIX} {CELL_SEPARATOR.join(parts)}")
+            cells = tuple(
+                (header[index] if index < len(header) else "", value)
+                for index, value in enumerate(row)
+                if value
+            )
+            if cells:
+                structured.append(cells)
     else:
-        for row in cleaned:
-            lines.append(f"{ROW_PREFIX} {CELL_SEPARATOR.join(v for v in row if v)}")
-    return "\n".join(lines)
+        structured = [tuple(("", v) for v in row if v) for row in cleaned]
+
+    lines = [
+        f"{ROW_PREFIX} {CELL_SEPARATOR.join(f'{name} {value}'.strip() for name, value in row)}"
+        for row in structured
+    ]
+    return TableData("\n".join(lines), tuple(structured))
+
+
+def rows_to_text(rows: Iterable[Sequence[str | None]], has_header: bool) -> str:
+    """Render table rows as text, one ``Row: ...`` line per row."""
+    return render_table(rows, has_header).text
 
 
 def split_stacked_row(rows: list[list[str | None]]) -> list[list[str | None]]:

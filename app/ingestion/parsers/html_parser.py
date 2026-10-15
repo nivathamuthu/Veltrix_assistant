@@ -14,7 +14,7 @@ from bs4.element import Comment, Doctype, NavigableString, ProcessingInstruction
 
 from app.ingestion.parsers.builder import SectionBuilder, clean
 from app.ingestion.parsers.models import ParsedDocument
-from app.ingestion.parsers.tables import rows_to_text
+from app.ingestion.parsers.tables import render_table
 
 REMOVED_TAGS = ("script", "style", "nav")
 _HEADINGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
@@ -98,7 +98,8 @@ def parse_html(path: str | Path) -> ParsedDocument:
             elif name == "table":
                 flush()
                 rows, has_header = _table_rows(child)
-                builder.table(rows_to_text(rows, has_header))
+                data = render_table(rows, has_header)
+                builder.table(data.text, None, data.rows)
             elif name in _BLOCKS:
                 flush()
                 walk(child)

@@ -11,7 +11,7 @@ from pathlib import Path
 
 from app.ingestion.parsers.builder import SectionBuilder, clean
 from app.ingestion.parsers.models import ParsedDocument
-from app.ingestion.parsers.tables import rows_to_text
+from app.ingestion.parsers.tables import render_table
 
 _ATX_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
 _SETEXT_UNDERLINE = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
@@ -101,7 +101,8 @@ def parse_markdown(path: str | Path) -> ParsedDocument:
             while i < len(lines) and lines[i].strip() and "|" in lines[i]:
                 rows.append(_split_row(lines[i]))
                 i += 1
-            builder.table(rows_to_text(rows, has_header=True))
+            data = render_table(rows, has_header=True)
+            builder.table(data.text, None, data.rows)
             continue
 
         if _LIST_ITEM.match(line):

@@ -23,7 +23,7 @@ import pdfplumber
 from app.ingestion.parsers import ocr as ocr_module
 from app.ingestion.parsers.builder import SectionBuilder, clean
 from app.ingestion.parsers.models import ParsedDocument
-from app.ingestion.parsers.tables import rows_to_text, split_stacked_row
+from app.ingestion.parsers.tables import TableData, render_table, split_stacked_row
 from app.logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -65,6 +65,7 @@ class _Block:
     kind: str  # "heading" | "para" | "table"
     text: str
     page: int
+    rows: tuple = ()  # tables only: structured rows (see parsers/tables.py)
 
 
 def _is_bold(fontname: str) -> bool:
@@ -98,8 +99,8 @@ def _line_from_chars(text: str, chars: list[dict], top: float, bottom: float) ->
     )
 
 
-def _tables_text(page, tables) -> list[tuple[float, str]]:
-    """(top, row-wise text) for each table found on the page."""
+def _tables_text(page, tables) -> list[tuple[float, TableData]]:
+    """(top, row-wise text + structured rows) for each table found on the page."""
     found = []
     for table in tables:
         rows = split_stacked_row(table.extract())
@@ -108,9 +109,9 @@ def _tables_text(page, tables) -> list[tuple[float, str]]:
             c for c in page.chars if c["text"].strip() and _center_inside(c, first_row)
         ]
         has_header = bool(glyphs) and all(_is_bold(c["fontname"]) for c in glyphs)
-        text = rows_to_text(rows, has_header)
-        if text:
-            found.append((table.bbox[1], text))
+        data = render_table(rows, has_header)
+        if data.text:
+            found.append((table.bbox[1], data))
     return found
 
 
@@ -178,7 +179,7 @@ def _blocks_for_page(
     for _top, kind, payload in items:
         if kind == "table":
             close_paragraph()
-            blocks.append(_Block("table", str(payload), page_no))
+            blocks.append(_Block("table", payload.text, page_no, payload.rows))
             prev, prev_was_heading = None, False
             continue
         line: _Line = payload  # type: ignore[assignment]
@@ -289,7 +290,7 @@ def parse_pdf(path: str | Path, ocr_function: OcrFunction | None = None) -> Pars
             found = page.find_tables()  # once per page: text and boxes must agree
             lines = _page_lines(page, [t.bbox for t in found])
             items: list[tuple[float, str, object]] = [(l.top, "line", l) for l in lines]
-            items += [(top, "table", text) for top, text in _tables_text(page, found)]
+            items += [(top, "table", data) for top, data in _tables_text(page, found)]
             items.sort(key=lambda item: item[0])
             pages_content.append((page_no, items, lines))
 
@@ -305,7 +306,7 @@ def parse_pdf(path: str | Path, ocr_function: OcrFunction | None = None) -> Pars
             if block.kind == "heading":
                 builder.heading(block.text, block.page)
             elif block.kind == "table":
-                builder.table(block.text, block.page)
+                builder.table(block.text, block.page, block.rows)
             else:
                 builder.paragraph(block.text, block.page)
     doc.sections = builder.finish()
