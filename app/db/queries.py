@@ -60,6 +60,26 @@ _SQL_TEAM_REQUESTS = (
     "ORDER BY r.start_date, r.employee_id, r.request_id"
 )
 
+# The permission question "is X a direct report of Y?" answered on the two ids alone.
+# It returns a bare 1 or nothing: no column of the target is read into the caller, and a
+# nonexistent id gives the same empty answer as an existing one that is not a report.
+_SQL_IS_DIRECT_REPORT = "SELECT 1 FROM employees WHERE employee_id = ? AND manager_id = ?"
+
+# A request overlaps [start, end] when it starts on/before `end` and ends on/after `start`.
+_SQL_OVERLAPPING = (
+    "SELECT " + _REQUEST_COLUMNS + " FROM leave_requests r "
+    "WHERE r.employee_id = ? AND r.status IN ('pending', 'approved') "
+    "AND r.start_date <= ? AND r.end_date >= ? "
+    "ORDER BY r.start_date, r.end_date, r.request_id"
+)
+
+# Ownership is part of the lookup itself: someone else's request and a request that does
+# not exist are the same empty answer.
+_SQL_OWN_REQUEST = (
+    "SELECT " + _REQUEST_COLUMNS + " FROM leave_requests r "
+    "WHERE r.request_id = ? AND r.employee_id = ?"
+)
+
 _SQL_PII = "SELECT full_name, email, phone FROM employees"
 
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -137,6 +157,34 @@ def get_team_requests(
     if end < start:
         raise ValueError("end_date must not be before start_date")
     return [_request(r) for r in conn.execute(_SQL_TEAM_REQUESTS, (manager_id, end, start))]
+
+
+def is_direct_report(conn: sqlite3.Connection, manager_id: str, employee_id: str) -> bool:
+    """True if ``employee_id`` exists and its ``manager_id`` equals ``manager_id``.
+
+    Built for permission checks: it needs no read of the target's data, and a missing
+    employee and a non-report give the identical answer (False).
+    """
+    return conn.execute(_SQL_IS_DIRECT_REPORT, (employee_id, manager_id)).fetchone() is not None
+
+
+def find_overlapping_requests(
+    conn: sqlite3.Connection, employee_id: str, start_date: str, end_date: str
+) -> list[LeaveRequest]:
+    """The employee's PENDING and APPROVED requests sharing at least one calendar date
+    with ``[start_date, end_date]`` (inclusive). Cancelled requests never count."""
+    start = _check_date("start_date", start_date)
+    end = _check_date("end_date", end_date)
+    return [_request(r) for r in conn.execute(_SQL_OVERLAPPING, (employee_id, end, start))]
+
+
+def get_own_request(
+    conn: sqlite3.Connection, employee_id: str, request_id: str
+) -> LeaveRequest | None:
+    """The request with this id IF it belongs to ``employee_id``; None otherwise (not found
+    and not yours are indistinguishable)."""
+    row = conn.execute(_SQL_OWN_REQUEST, (request_id, employee_id)).fetchone()
+    return _request(row) if row else None
 
 
 def get_pii_values(

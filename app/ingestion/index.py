@@ -3,8 +3,9 @@
 Access control lives HERE, in code, before any scoring (project rule 2):
 
 1. ``SearchFilters`` (allowed access levels + requester region, optional
-   max effective date) is REQUIRED. There is no default and no "search
-   everything" mode.
+   effective-date range) is REQUIRED. There is no default and no "search
+   everything" mode: access levels and region are mandatory, and the dates
+   only narrow the result further.
 2. ``_eligible_positions`` decides which chunks may be considered using
    metadata only. It never reads chunk text, tokens or vectors.
 3. BM25 statistics are built from the eligible chunks only (so a restricted
@@ -74,6 +75,7 @@ class SearchFilters:
     allowed_access_levels: frozenset[str]
     region: str
     max_effective_date: str | None = None  # ISO date; chunks effective later are excluded
+    min_effective_date: str | None = None  # ISO date; chunks effective EARLIER are excluded (inclusive)
 
     def __post_init__(self) -> None:
         levels = self.allowed_access_levels
@@ -83,11 +85,14 @@ class SearchFilters:
         if not isinstance(self.region, str) or not self.region.strip():
             raise ValueError("region is required")
         object.__setattr__(self, "region", self.region.strip().upper())
-        limit = self.max_effective_date
-        if isinstance(limit, date):
-            object.__setattr__(self, "max_effective_date", limit.isoformat())
-        elif limit is not None:
-            object.__setattr__(self, "max_effective_date", date.fromisoformat(limit).isoformat())
+        for name in ("max_effective_date", "min_effective_date"):
+            bound = getattr(self, name)
+            if isinstance(bound, datetime):
+                bound = bound.date()
+            if isinstance(bound, date):
+                object.__setattr__(self, name, bound.isoformat())
+            elif bound is not None:
+                object.__setattr__(self, name, date.fromisoformat(bound).isoformat())
 
 
 @dataclass(frozen=True)
@@ -193,6 +198,7 @@ class HybridIndex:
         """Positions of chunks the requester may read. Metadata only."""
         allowed = filters.allowed_access_levels
         limit = filters.max_effective_date
+        floor = filters.min_effective_date
         eligible = []
         for pos in range(len(self._chunks)):
             if self._access[pos] not in allowed:
@@ -201,6 +207,8 @@ class HybridIndex:
             if GLOBAL_REGION not in regions and filters.region not in regions:
                 continue
             if limit is not None and self._effective[pos] > limit:
+                continue
+            if floor is not None and self._effective[pos] < floor:
                 continue
             eligible.append(pos)
         return tuple(eligible)

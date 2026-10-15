@@ -182,7 +182,7 @@ def test_a_table_whose_dates_are_mostly_unreadable_is_not_dropped_silently(caplo
     rows = [
         ["15. Januar 2026", "Donnerstag", "SecretNameOne"],
         ["26. Januar 2026", "Montag", "SecretNameTwo"],
-        ["3. April 2026", "Freitag", "SecretNameThree"],
+        ["1. Mai 2026", "Freitag", "SecretNameThree"],
     ]
     with caplog.at_level(logging.WARNING):
         result = run(entry("SYN-DE"), table("Public holidays", rows))

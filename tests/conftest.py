@@ -40,6 +40,31 @@ def synthetic_db(tmp_path: Path) -> Database:
 
 
 @pytest.fixture()
+def tools_db(tmp_path: Path) -> Database:
+    """Synthetic DB for the leave tools: org chart, balances, requests, holiday calendars."""
+    from tests.tool_helpers import build_tools_db
+
+    return build_tools_db(tmp_path / "tools.db")
+
+
+@pytest.fixture()
+def sql_log(monkeypatch) -> list[str]:
+    """Every SQL statement run through Database connections, as sqlite reports it."""
+    import app.db.connection as connection
+
+    statements: list[str] = []
+    real_open = connection._open
+
+    def traced(path, *, readonly):
+        conn = real_open(path, readonly=readonly)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(connection, "_open", traced)
+    return statements
+
+
+@pytest.fixture()
 def real_db_copy(tmp_path: Path) -> Database:
     """A temporary COPY of data/veltrix.db; the original is never touched."""
     if not REAL_DB.is_file():

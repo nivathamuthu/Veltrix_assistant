@@ -1,4 +1,4 @@
-.PHONY: install test test-docker report chunk-report download-models run up down
+.PHONY: install test test-docker report chunk-report retrieval-report tool-report holiday-report download-models run up down
 
 install:
 	pip install -r requirements-dev.txt
@@ -18,6 +18,21 @@ report:
 # Real startup ingestion, then chunk stats, timings and sample searches.
 chunk-report:
 	docker compose run --rm --no-deps app python -m app.ingestion.chunk_report
+
+# Retrieve for six sample questions across roles and regions; print doc_ids per
+# set (CURRENT / UPCOMING) and the corpus tokens left after the 3,000-token budget.
+retrieval-report:
+	docker compose run --rm --no-deps app python -m app.retrieval.retrieval_report
+
+# Run each of the five leave tools once on a temporary COPY of the database and
+# print the ToolResult of each.
+tool-report:
+	docker compose run --rm --no-deps app python -m app.tools.tool_report
+
+# Extract holidays from the calendar documents; print counts per calendar and
+# the public dates per region (compare them with the source documents).
+holiday-report:
+	docker compose run --rm --no-deps app python -m app.ingestion.holiday_report
 
 # Non-Docker setups only: the image downloads the models during `docker build`.
 download-models:

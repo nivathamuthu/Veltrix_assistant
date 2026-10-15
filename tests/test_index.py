@@ -320,3 +320,50 @@ def test_save_writes_vectors_ids_and_meta_and_overwrites_older_files(index, tmp_
 def test_vectors_are_normalised(index):
     norms = np.linalg.norm(index._vectors, axis=1)
     assert np.allclose(norms, 1.0, atol=1e-5)
+
+
+# --- effective-date range (Phase 5: CURRENT vs UPCOMING) -----------------------
+
+
+def test_the_date_bounds_default_to_none_and_never_replace_access_or_region():
+    filters = SearchFilters(allowed_access_levels=frozenset({"all"}), region="IN")
+    assert filters.min_effective_date is None and filters.max_effective_date is None
+    with pytest.raises(TypeError):
+        SearchFilters(min_effective_date="2026-01-01")  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        SearchFilters(region="IN", min_effective_date="2026-01-01")  # type: ignore[call-arg]
+
+
+def test_min_effective_date_is_inclusive_and_excludes_earlier_chunks(index):
+    later = SearchFilters(frozenset({"all"}), "IN", min_effective_date="2027-01-01")
+    assert ids(index.search("leave policy version", later, 10)) == ["FUTURE::001"]
+    day_after = SearchFilters(frozenset({"all"}), "IN", min_effective_date="2027-01-02")
+    assert index.search("leave policy version", day_after, 10) == []
+
+
+def test_min_and_max_together_form_an_inclusive_range(index):
+    both = SearchFilters(frozenset({"all"}), "IN", max_effective_date="2026-12-31", min_effective_date="2026-01-01")
+    results = index.search("leave", both, 10)
+    assert results and all("2026-01-01" <= r.effective_date <= "2026-12-31" for r in results)
+    assert "FUTURE::001" not in ids(results)
+
+
+def test_an_inverted_range_matches_nothing(index):
+    inverted = SearchFilters(frozenset({"all"}), "IN", max_effective_date="2025-01-01", min_effective_date="2026-01-01")
+    assert index.search("leave", inverted, 10) == []
+
+
+def test_date_bounds_accept_dates_datetimes_and_iso_strings_and_reject_junk():
+    from datetime import date, datetime
+
+    for value in (date(2026, 1, 1), datetime(2026, 1, 1, 9, 30), "2026-01-01"):
+        f = SearchFilters(frozenset({"all"}), "IN", min_effective_date=value, max_effective_date=value)
+        assert f.min_effective_date == f.max_effective_date == "2026-01-01"
+    for junk in ("soon", "01/01/2026", "2026-13-01"):
+        with pytest.raises(ValueError):
+            SearchFilters(frozenset({"all"}), "IN", min_effective_date=junk)
+
+
+def test_the_restricted_chunk_stays_hidden_whatever_the_date_range(index):
+    wide = SearchFilters(frozenset({"all"}), "IN", min_effective_date="1990-01-01", max_effective_date="2100-01-01")
+    assert RESTRICTED_ID not in ids(index.search(RESTRICTED_TEXT, wide, 10))

@@ -19,11 +19,14 @@ from app.db.models import (
     Segment,
 )
 from app.db.queries import (
+    find_overlapping_requests,
     get_balance,
     get_direct_reports,
     get_employee,
+    get_own_request,
     get_pii_values,
     get_team_requests,
+    is_direct_report,
     list_requests,
 )
 from app.db.sessions import (
@@ -54,12 +57,15 @@ __all__ = [
     "SessionCheck",
     "claim_or_check_session",
     "count_chunks",
+    "find_overlapping_requests",
     "get_balance",
     "get_direct_reports",
     "get_employee",
+    "get_own_request",
     "get_pii_values",
     "get_public_dates",
     "get_team_requests",
+    "is_direct_report",
     "list_calendars",
     "list_requests",
     "load_chunks",
