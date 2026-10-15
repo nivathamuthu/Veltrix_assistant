@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8,<9
+httpx>=0.27,<1
+# Builds small PDF fixtures inside the tests.
+reportlab>=4,<6

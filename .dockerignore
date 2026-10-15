@@ -1,0 +1,13 @@
+.git
+.cursor
+.venv
+__pycache__/
+*.pyc
+.env
+data/
+index/
+*.log
+tests/
+docs/
+__MACOSX/
+veltrix_assessment/
