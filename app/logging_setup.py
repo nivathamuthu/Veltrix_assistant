@@ -16,7 +16,7 @@ import logging
 import re
 import sys
 import threading
-from typing import Iterable
+from typing import Iterable, TextIO
 
 REDACTED_NAME = "[REDACTED_NAME]"
 REDACTED_EMAIL = "[REDACTED_EMAIL]"
@@ -139,15 +139,16 @@ def _harden(logger: logging.Logger, formatter: logging.Formatter) -> None:
         handler.setFormatter(formatter)
 
 
-def configure_logging(level: str = "INFO") -> None:
+def configure_logging(level: str = "INFO", stream: TextIO | None = None) -> None:
     """Install the redacting formatter on the root and uvicorn loggers.
 
-    Safe to call more than once.
+    ``stream`` is where a root handler is created if none exists (default
+    stdout). Safe to call more than once.
     """
     formatter = RedactingFormatter(LOG_FORMAT)
     root = logging.getLogger()
     if not root.handlers:
-        root.addHandler(logging.StreamHandler(sys.stdout))
+        root.addHandler(logging.StreamHandler(stream or sys.stdout))
     root.setLevel(level)
     _harden(root, formatter)
     for name in _UVICORN_LOGGERS:

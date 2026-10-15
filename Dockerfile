@@ -14,6 +14,18 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# Models are fetched ONCE here, in their own layer (before the app code, so a
+# code change does not re-download them). The running container loads them
+# from these folders with no network access.
+ENV EMBED_MODEL=BAAI/bge-small-en-v1.5 \
+    EMBED_CACHE_DIR=/opt/models \
+    TIKTOKEN_CACHE_DIR=/opt/tiktoken
+COPY scripts/download_models.py scripts/download_models.py
+RUN python scripts/download_models.py
+
+# From here on nothing may reach out to the model hub.
+ENV HF_HUB_OFFLINE=1
+
 COPY app ./app
 
 # Writable location for the vector index (rebuilt at every startup).

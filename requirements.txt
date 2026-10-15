@@ -10,3 +10,9 @@ pytesseract>=0.3.10,<1
 python-docx>=1.1,<2
 beautifulsoup4>=4.12,<5
 Pillow>=10.1
+
+# Chunking, search index (Phase 3b)
+tiktoken>=0.7,<1
+rank-bm25>=0.2.2,<1
+numpy>=1.26,<3
+fastembed>=0.9,<1

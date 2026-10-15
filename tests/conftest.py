@@ -14,7 +14,7 @@ from app.logging_setup import clear_pii
 from tests.db_helpers import build_synthetic_db
 
 ENV_VARS = (
-    "CORPUS_DIR", "MANIFEST_PATH", "DB_PATH", "INDEX_DIR", "APP_TODAY",
+    "CORPUS_DIR", "MANIFEST_PATH", "DB_PATH", "INDEX_DIR", "EMBED_CACHE_DIR", "APP_TODAY",
     "LLM_PROVIDER", "LLM_MODEL", "EMBED_MODEL", "OPENAI_API_KEY",
     "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "LOG_LEVEL",
     "INGEST_STARTUP_DELAY_SECONDS", "LLM_TIMEOUT_SECONDS", "REQUEST_TIMEOUT_SECONDS",
@@ -59,9 +59,23 @@ def core_db(request, tmp_path: Path) -> Database:
 
 @pytest.fixture()
 def data_dir(tmp_path: Path) -> Path:
-    """A tiny synthetic data folder shaped like the evaluator's."""
+    """A tiny synthetic data folder shaped like the evaluator's (one small document)."""
     (tmp_path / "corpus").mkdir()
-    (tmp_path / "manifest.json").write_text(json.dumps([]), encoding="utf-8")
+    (tmp_path / "corpus" / "sample.md").write_text(
+        "# Sample Policy\n\nSynthetic text used only by tests.\n", encoding="utf-8"
+    )
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            [
+                {
+                    "doc_id": "SYN-SAMPLE", "file": "sample.md", "title": "Sample",
+                    "doc_type": "policy", "regions": ["GLOBAL"],
+                    "effective_date": "2026-01-01", "access_level": "all",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     conn = sqlite3.connect(tmp_path / "veltrix.db")
     conn.execute(
         "CREATE TABLE employees (employee_id TEXT PRIMARY KEY, full_name TEXT, email TEXT,"
@@ -74,6 +88,13 @@ def data_dir(tmp_path: Path) -> Path:
     conn.commit()
     conn.close()
     return tmp_path
+
+
+@pytest.fixture()
+def fake_embedder():
+    from tests.fake_embedder import FakeEmbedder
+
+    return FakeEmbedder()
 
 
 @pytest.fixture()

@@ -37,7 +37,8 @@ MIGRATIONS: tuple[str, ...] = (
         effective_date  TEXT NOT NULL,   -- YYYY-MM-DD
         doc_type        TEXT NOT NULL,
         access_level    TEXT NOT NULL,
-        text            TEXT NOT NULL
+        text            TEXT NOT NULL,
+        token_count     INTEGER NOT NULL DEFAULT 0   -- cl100k_base tokens in text
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks (doc_id)",
@@ -63,8 +64,19 @@ MIGRATIONS: tuple[str, ...] = (
 )
 
 
+# A database first migrated in Phase 2 has a ``chunks`` table without
+# token_count. Adding a column to OUR OWN table is allowed (rule 9 protects the
+# given tables); it is guarded so repeated runs do nothing.
+_SQL_HAS_TOKEN_COUNT = (
+    "SELECT 1 FROM pragma_table_info('chunks') WHERE name = 'token_count'"
+)
+_SQL_ADD_TOKEN_COUNT = "ALTER TABLE chunks ADD COLUMN token_count INTEGER NOT NULL DEFAULT 0"
+
+
 def run_migrations(db: Database) -> None:
     """Create any missing new tables and indexes. Safe to call repeatedly."""
     with db.transaction() as conn:
         for statement in MIGRATIONS:
             conn.execute(statement)
+        if conn.execute(_SQL_HAS_TOKEN_COUNT).fetchone() is None:
+            conn.execute(_SQL_ADD_TOKEN_COUNT)

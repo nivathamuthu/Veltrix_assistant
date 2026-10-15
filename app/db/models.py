@@ -30,6 +30,35 @@ class LeaveBalance:
 
 
 @dataclass(frozen=True)
+class Segment:
+    """Where one source section sits inside a chunk's text (character offsets).
+
+    Merged chunks hold several sections; knowing each one's locator lets a
+    search result cite the section that actually matches the query.
+    """
+
+    locator: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class Chunk:
+    """A retrievable passage. Metadata is copied from the manifest entry."""
+
+    chunk_id: str
+    doc_id: str
+    locator: str  # nearest heading, else "p. N" (first section if merged)
+    regions: tuple[str, ...]
+    effective_date: str
+    doc_type: str
+    access_level: str
+    text: str
+    token_count: int
+    segments: tuple[Segment, ...] = ()  # in memory only; not stored in the table
+
+
+@dataclass(frozen=True)
 class LeaveRequest:
     request_id: str
     employee_id: str

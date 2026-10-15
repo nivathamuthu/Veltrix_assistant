@@ -39,6 +39,7 @@ class Settings:
     manifest_path: Path
     db_path: Path
     index_dir: Path
+    embed_cache_dir: Path  # where the embedding model files live (offline at runtime)
     app_today: date | None  # None -> use the system date
     llm_provider: str
     llm_model: str
@@ -109,6 +110,7 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         manifest_path=Path(_get("MANIFEST_PATH", "./data/manifest.json")),
         db_path=Path(_get("DB_PATH", "./data/veltrix.db")),
         index_dir=Path(_get("INDEX_DIR", "./index")),
+        embed_cache_dir=Path(_get("EMBED_CACHE_DIR", "./models")),
         app_today=_parse_today(_get("APP_TODAY", "")),
         llm_provider=provider,
         llm_model=_get("LLM_MODEL", ""),

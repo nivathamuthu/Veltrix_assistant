@@ -98,7 +98,8 @@ def test_foreign_keys_still_consistent_after_migration(core_db):
         ("holidays", ["region", "date", "name", "doc_id"]),
         (
             "chunks",
-            ["chunk_id", "doc_id", "locator", "regions", "effective_date", "doc_type", "access_level", "text"],
+            ["chunk_id", "doc_id", "locator", "regions", "effective_date", "doc_type", "access_level",
+             "text", "token_count"],
         ),
         ("sessions", ["session_id", "employee_id", "created_at"]),
         ("pending_proposals", ["session_id", "action", "payload_json", "created_at"]),
@@ -139,7 +140,26 @@ def test_sessions_reference_real_employees(synthetic_db):
             conn.execute("INSERT INTO sessions VALUES ('S3', 'NO_SUCH_EMPLOYEE', 'now')")
 
 
-def test_startup_runs_migrations_and_never_creates_a_missing_db(tmp_path, data_dir, monkeypatch):
+def test_chunks_table_from_phase_2_gains_token_count_without_losing_rows(synthetic_db):
+    """A database migrated before Phase 3b has no token_count; adding it is idempotent."""
+    with synthetic_db.transaction() as conn:
+        conn.execute(
+            "CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, locator TEXT NOT NULL,"
+            " regions TEXT NOT NULL, effective_date TEXT NOT NULL, doc_type TEXT NOT NULL,"
+            " access_level TEXT NOT NULL, text TEXT NOT NULL)"
+        )
+        conn.execute("INSERT INTO chunks VALUES ('C1','D1','h','[\"GLOBAL\"]','2026-01-01','policy','all','t')")
+    run_migrations(synthetic_db)
+    run_migrations(synthetic_db)  # twice: no error, no second column
+    cols = _columns(synthetic_db, "chunks")
+    assert list(cols).count("token_count") == 1
+    with synthetic_db.read() as conn:
+        assert conn.execute("SELECT chunk_id, token_count FROM chunks").fetchall()[0]["token_count"] == 0
+
+
+def test_startup_runs_migrations_and_never_creates_a_missing_db(
+    tmp_path, data_dir, monkeypatch, fake_embedder
+):
     """Through the real startup path: tables appear; a wrong DB_PATH stays a failure."""
     import time
 
@@ -151,7 +171,8 @@ def test_startup_runs_migrations_and_never_creates_a_missing_db(tmp_path, data_d
     monkeypatch.setenv("CORPUS_DIR", str(data_dir / "corpus"))
     monkeypatch.setenv("MANIFEST_PATH", str(data_dir / "manifest.json"))
     monkeypatch.setenv("DB_PATH", str(data_dir / "veltrix.db"))
-    with TestClient(create_app(load_settings(env_file=None))) as client:
+    monkeypatch.setenv("INDEX_DIR", str(tmp_path / "idx"))
+    with TestClient(create_app(load_settings(env_file=None), embedder=fake_embedder)) as client:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline and client.get("/health").status_code != 200:
             time.sleep(0.05)
@@ -163,7 +184,7 @@ def test_startup_runs_migrations_and_never_creates_a_missing_db(tmp_path, data_d
 
     ghost = tmp_path / "ghost.db"
     monkeypatch.setenv("DB_PATH", str(ghost))
-    with TestClient(create_app(load_settings(env_file=None))) as client:
+    with TestClient(create_app(load_settings(env_file=None), embedder=fake_embedder)) as client:
         time.sleep(0.5)
         assert client.get("/health").status_code == 503
     assert not Path(ghost).exists()
