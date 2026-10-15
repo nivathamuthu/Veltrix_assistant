@@ -21,7 +21,10 @@ logger = logging.getLogger("app.tools")
 
 STATUS_SUCCESS = "success"
 STATUS_ERROR = "error"
-_STATUSES = (STATUS_SUCCESS, STATUS_ERROR)  # "pending_confirmation" is added by a later step
+# Only the confirmation step of the orchestrator produces this one (a proposal waiting for
+# the user's "yes"). The five tools themselves return "success" or "error" only.
+STATUS_PENDING_CONFIRMATION = "pending_confirmation"
+_STATUSES = (STATUS_SUCCESS, STATUS_ERROR, STATUS_PENDING_CONFIRMATION)
 
 # One fixed text for "you may not see that employee", identical whether or not the
 # employee exists. It names nobody.
@@ -49,7 +52,8 @@ class ToolResult:
 
     ``args`` holds only B6 argument names with ids, types and dates: never a name,
     email or phone (see ``safe_args``). ``data`` is empty for an error and ``reason`` is
-    the specific, requester-safe explanation. ``status`` is "success" or "error".
+    the specific, requester-safe explanation. ``status`` is "success" or "error" (or
+    "pending_confirmation", which only the confirmation module produces).
     """
 
     name: str
@@ -66,8 +70,8 @@ class ToolResult:
             raise ValueError("args may only use B6 argument names")
         if self.status == STATUS_ERROR and not (isinstance(self.reason, str) and self.reason):
             raise ValueError("an error needs a reason")
-        if self.status == STATUS_SUCCESS and self.reason is not None:
-            raise ValueError("a success has no reason")
+        if self.status != STATUS_ERROR and self.reason is not None:
+            raise ValueError("only an error has a reason")
         object.__setattr__(self, "args", dict(self.args))
         object.__setattr__(self, "data", dict(self.data))
 

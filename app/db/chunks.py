@@ -17,6 +17,7 @@ _SQL_INSERT = (
     "doc_type, access_level, text, token_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 _SQL_COUNT = "SELECT COUNT(*) AS n FROM chunks"
+_SQL_DOC_LEVELS = "SELECT DISTINCT doc_id, access_level FROM chunks"
 _SQL_ALL = (
     "SELECT chunk_id, doc_id, locator, regions, effective_date, doc_type, access_level, "
     "text, token_count FROM chunks ORDER BY chunk_id"
@@ -40,6 +41,27 @@ def replace_chunks(conn: sqlite3.Connection, chunks: Iterable[Chunk]) -> int:
 
 def count_chunks(conn: sqlite3.Connection) -> int:
     return conn.execute(_SQL_COUNT).fetchone()["n"]
+
+
+def readable_doc_ids(conn: sqlite3.Connection, access_levels: Iterable[str]) -> frozenset[str]:
+    """The doc_ids that have chunks with one of ``access_levels``. The caller passes the
+    levels its role may read (policy_resolver.readable_access_levels); no levels, no ids.
+    Used as a last-line filter on citations, never to find documents to send."""
+    levels = {a for a in access_levels if isinstance(a, str)}
+    if not levels:
+        return frozenset()
+    rows = conn.execute(_SQL_DOC_LEVELS)  # constant SQL; the filter is applied in Python
+    return frozenset(r["doc_id"] for r in rows if r["access_level"] in levels)
+
+
+_SQL_DOC_SECTIONS = "SELECT locator, text FROM chunks WHERE doc_id = ? ORDER BY chunk_id"
+
+
+def doc_sections(conn: sqlite3.Connection, doc_id: str) -> list[tuple[str, str]]:
+    """``(locator, text)`` of each chunk of ONE document, in document order. Used to find the
+    section of a calendar document to cite; the caller has already checked that the requester
+    may read the document (the calendar lookup filters by access level)."""
+    return [(r["locator"], r["text"]) for r in conn.execute(_SQL_DOC_SECTIONS, (doc_id,))]
 
 
 def load_chunks(conn: sqlite3.Connection) -> list[Chunk]:

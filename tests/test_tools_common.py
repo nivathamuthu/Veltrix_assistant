@@ -12,6 +12,7 @@ import pytest
 from app.tools import (
     REFUSAL_MESSAGE,
     STATUS_ERROR,
+    STATUS_PENDING_CONFIRMATION,
     STATUS_SUCCESS,
     ToolResult,
     apply_leave,
@@ -34,14 +35,42 @@ B6_ARGUMENTS = {"employee_id", "leave_type", "status", "start_date", "end_date",
 def test_tool_result_has_the_agreed_fields_and_statuses():
     assert [f.name for f in dataclasses.fields(ToolResult)] == ["name", "args", "status", "data", "reason"]
     assert (STATUS_SUCCESS, STATUS_ERROR) == ("success", "error")
+    assert STATUS_PENDING_CONFIRMATION == "pending_confirmation"
     ok = ToolResult("get_leave_balance", {"employee_id": "E1"}, "success", {"x": 1}, None)
     assert ok.status == "success" and ok.reason is None
 
 
-@pytest.mark.parametrize("status", ["pending_confirmation", "ok", "", None])
-def test_only_success_and_error_are_valid_statuses_for_now(status):
+@pytest.mark.parametrize("status", ["ok", "pending", "", None, "SUCCESS"])
+def test_only_the_three_known_statuses_are_valid(status):
     with pytest.raises(ValueError):
         ToolResult("get_leave_balance", {}, status, {}, None)
+
+
+def test_pending_confirmation_is_a_valid_status_without_a_reason():
+    pending = ToolResult("apply_leave", {"leave_type": "annual"}, "pending_confirmation", {"working_days": 3}, None)
+    assert pending.status == STATUS_PENDING_CONFIRMATION and pending.reason is None
+    with pytest.raises(ValueError):
+        ToolResult("apply_leave", {}, "pending_confirmation", {}, "a reason")
+
+
+SRC = Path(__file__).resolve().parent.parent / "app"
+
+
+def test_only_the_confirmation_module_produces_pending_confirmation():
+    """The tools never return it; the constant appears only where it is defined, produced
+    (confirmation) or read (response)."""
+    allowed = {
+        SRC / "tools" / "common.py",
+        SRC / "tools" / "__init__.py",  # re-export only
+        SRC / "orchestrator" / "confirmation.py",
+        SRC / "orchestrator" / "response.py",
+        SRC / "orchestrator" / "service.py",  # strips it from a responder's output; never creates one
+    }
+    users = {path for path in SRC.rglob("*.py") if "STATUS_PENDING_CONFIRMATION" in path.read_text("utf-8")}
+    assert users <= allowed, sorted(str(p) for p in users - allowed)
+    for tool_file in (SRC / "tools").glob("*.py"):
+        if tool_file.name not in ("common.py", "__init__.py"):
+            assert "pending_confirmation" not in tool_file.read_text("utf-8").lower()
 
 
 def test_an_error_needs_a_reason_and_a_success_does_not_have_one():

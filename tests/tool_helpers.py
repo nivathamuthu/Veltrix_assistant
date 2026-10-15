@@ -60,14 +60,12 @@ def _holiday(doc_id, region, day, kind=KIND_PUBLIC):
     return HolidayRow(region, day, "Some day", doc_id, kind, "2026-01-01", (region,))
 
 
-def build_tools_db(path: Path) -> Database:
-    build_synthetic_db(path)
-    db = Database(path)
-    run_migrations(db)
+def load_test_holidays(db: Database) -> None:
+    """The synthetic holiday calendars (see the module docstring), via the real tables.
+
+    Separate from ``build_tools_db`` so API tests can add them AFTER startup ingestion,
+    which rebuilds the holiday tables from the (empty) test corpus."""
     with db.transaction() as conn:
-        conn.executemany("INSERT INTO employees VALUES (?,?,?,?,?,?,?,?,?)", EXTRA_EMPLOYEES)
-        conn.executemany("INSERT INTO leave_balances VALUES (?,?,?)", EXTRA_BALANCES)
-        conn.executemany("INSERT INTO leave_requests VALUES (?,?,?,?,?,?,?,?)", EXTRA_REQUESTS)
         replace_holiday_data(
             conn,
             [_calendar("CAL-IN", ["IN"], public=3), _calendar("CAL-US", ["US"])],
@@ -79,6 +77,18 @@ def build_tools_db(path: Path) -> Database:
                 _holiday("CAL-US", "US", "2026-11-26"),
             ],
         )
+
+
+def build_tools_db(path: Path, *, holidays: bool = True) -> Database:
+    build_synthetic_db(path)
+    db = Database(path)
+    run_migrations(db)
+    with db.transaction() as conn:
+        conn.executemany("INSERT INTO employees VALUES (?,?,?,?,?,?,?,?,?)", EXTRA_EMPLOYEES)
+        conn.executemany("INSERT INTO leave_balances VALUES (?,?,?)", EXTRA_BALANCES)
+        conn.executemany("INSERT INTO leave_requests VALUES (?,?,?,?,?,?,?,?)", EXTRA_REQUESTS)
+    if holidays:
+        load_test_holidays(db)
     return db
 
 

@@ -1,4 +1,4 @@
-.PHONY: install test test-docker report chunk-report retrieval-report tool-report holiday-report download-models run up down
+.PHONY: install test test-docker report chunk-report retrieval-report tool-report holiday-report live-smoke download-models run up down
 
 install:
 	pip install -r requirements-dev.txt
@@ -33,6 +33,11 @@ tool-report:
 # the public dates per region (compare them with the source documents).
 holiday-report:
 	docker compose run --rm --no-deps app python -m app.ingestion.holiday_report
+
+# 15 Part A sample queries against a running service and the real provider.
+# Start the stack first (`make up`) and wait for /health 200. Not part of `make test`.
+live-smoke:
+	python -m app.live_smoke
 
 # Non-Docker setups only: the image downloads the models during `docker build`.
 download-models:

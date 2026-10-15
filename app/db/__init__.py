@@ -1,7 +1,13 @@
 """Database layer: connections, transactions, migrations, reads, sessions."""
-from app.db.chunks import count_chunks, load_chunks, replace_chunks
+from app.db.chunks import count_chunks, doc_sections, load_chunks, readable_doc_ids, replace_chunks
 from app.db.connection import Database
-from app.db.holidays import get_public_dates, list_calendars, load_holidays, replace_holiday_data
+from app.db.holidays import (
+    get_calendar_holidays,
+    get_public_dates,
+    list_calendars,
+    load_holidays,
+    replace_holiday_data,
+)
 from app.db.migrations import NEW_TABLES, run_migrations
 from app.db.models import (
     CALENDAR_NO_PUBLIC,
@@ -57,8 +63,10 @@ __all__ = [
     "SessionCheck",
     "claim_or_check_session",
     "count_chunks",
+    "doc_sections",
     "find_overlapping_requests",
     "get_balance",
+    "get_calendar_holidays",
     "get_direct_reports",
     "get_employee",
     "get_own_request",
@@ -70,6 +78,7 @@ __all__ = [
     "list_requests",
     "load_chunks",
     "load_holidays",
+    "readable_doc_ids",
     "replace_chunks",
     "replace_holiday_data",
     "run_migrations",

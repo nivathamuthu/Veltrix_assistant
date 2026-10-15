@@ -12,6 +12,7 @@ from app.tools.common import (
     REFUSAL_MESSAGE,
     REQUEST_STATUSES,
     STATUS_ERROR,
+    STATUS_PENDING_CONFIRMATION,
     STATUS_SUCCESS,
     ToolResult,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "REFUSAL_MESSAGE",
     "REQUEST_STATUSES",
     "STATUS_ERROR",
+    "STATUS_PENDING_CONFIRMATION",
     "STATUS_SUCCESS",
     "ToolResult",
     "apply_leave",

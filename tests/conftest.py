@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -129,3 +130,62 @@ def settings(data_dir: Path, monkeypatch):
     monkeypatch.setenv("DB_PATH", str(data_dir / "veltrix.db"))
     monkeypatch.setenv("INDEX_DIR", str(data_dir / "index"))
     return load_settings(env_file=None)
+
+
+@pytest.fixture()
+def make_chat(tmp_path: Path, monkeypatch, fake_embedder):
+    """Factory for a running app plus a ``Chat`` harness (see tests/chat_helpers.py).
+
+    ``make_chat(analyzer=..., responder=..., provider=..., extra_docs=..., wait=True, env={...})``.
+    With ``wait=False`` the app is returned while startup ingestion is still running.
+    Passing ``provider`` (a mock) uses the real LLM analyzer and policy responder."""
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from app.orchestrator.analyzer import ScriptedAnalyzer
+    from tests.chat_helpers import Chat, wait_until_ready, write_corpus
+    from tests.tool_helpers import build_tools_db, load_test_holidays
+
+    stack = ExitStack()
+    counter = {"n": 0}
+
+    def make(*, analyzer=None, responder=None, provider=None, extra_docs=None,
+             wait=True, env=None, startup_delay=0.0):
+        counter["n"] += 1
+        root = tmp_path / f"chat{counter['n']}"
+        root.mkdir()
+        corpus, manifest = write_corpus(root, extra=extra_docs)
+        db = build_tools_db(root / "veltrix.db", holidays=False)
+        monkeypatch.setenv("CORPUS_DIR", str(corpus))
+        monkeypatch.setenv("MANIFEST_PATH", str(manifest))
+        monkeypatch.setenv("DB_PATH", str(db.path))
+        monkeypatch.setenv("INDEX_DIR", str(root / "index"))
+        monkeypatch.setenv("APP_TODAY", "2026-10-15")
+        if startup_delay:
+            monkeypatch.setenv("INGEST_STARTUP_DELAY_SECONDS", str(startup_delay))
+        for key, value in (env or {}).items():
+            monkeypatch.setenv(key, str(value))
+        kwargs = {}
+        if analyzer is not None:
+            kwargs["analyzer"] = analyzer
+        elif provider is None:
+            kwargs["analyzer"] = ScriptedAnalyzer()
+        if responder is not None:
+            kwargs["responder"] = responder
+        if provider is not None:
+            kwargs["provider"] = provider
+        app = create_app(load_settings(env_file=None), embedder=fake_embedder, **kwargs)
+        client = stack.enter_context(TestClient(app))
+        if wait:
+            wait_until_ready(client)
+            load_test_holidays(db)
+        used = kwargs.get("analyzer")
+        return Chat(client=client, app=app, db=db, analyzer=used, settings=app.state.settings)
+
+    yield make
+    stack.close()
+
+
+@pytest.fixture()
+def chat(make_chat):
+    return make_chat()

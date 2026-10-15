@@ -1,4 +1,4 @@
-"""FastAPI app: /health now; /chat arrives in later phases."""
+"""FastAPI app: GET /health and POST /chat."""
 from __future__ import annotations
 
 import asyncio
@@ -7,20 +7,48 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
+from app.api.chat import register_chat
 from app.config import Settings, load_settings
+from app.db import Database
 from app.ingestion.embeddings import Embedder
 from app.ingestion.pipeline import run_ingestion
 from app.ingestion.state import IngestionState
+from app.llm.client import LLMClient
+from app.llm.providers import Provider, build_provider
 from app.logging_setup import configure_logging, get_logger
+from app.orchestrator.analyzer import Analyzer, NullAnalyzer
+from app.orchestrator.llm_analyzer import LLMAnalyzer
+from app.orchestrator.policy import LLMPolicyResponder, PlaceholderResponder, Responder
+from app.orchestrator.service import ChatService
 
 log = get_logger(__name__)
 
 
-def create_app(settings: Settings | None = None, embedder: Embedder | None = None) -> FastAPI:
-    """``embedder`` lets tests skip the real model; production leaves it None."""
+def create_app(
+    settings: Settings | None = None,
+    embedder: Embedder | None = None,
+    analyzer: Analyzer | None = None,
+    responder: Responder | None = None,
+    provider: Provider | None = None,
+) -> FastAPI:
+    """``embedder`` lets tests skip the real model; production leaves it None.
+
+    ``analyzer`` and ``responder`` are the LLM-facing seams of /chat. When an API key is
+    configured for ``LLM_PROVIDER`` (or a ``provider`` is passed, as tests do with a mock) the
+    real LLM analyzer and policy responder are used; otherwise the offline defaults stay: a
+    null analyzer (every message is unclear) and a placeholder responder (policy questions get
+    a polite no_answer). An explicit ``analyzer`` / ``responder`` always wins."""
     settings = settings or load_settings()
     configure_logging(settings.log_level)
     state = IngestionState()
+    provider = provider if provider is not None else build_provider(settings)
+    if provider is not None:
+        client = LLMClient(provider)
+        analyzer = analyzer or LLMAnalyzer(client)
+        responder = responder or LLMPolicyResponder(client)
+        log.info("LLM enabled (provider=%s)", provider.name)
+    else:
+        log.info("no LLM API key configured: offline analyzer and responder")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -45,6 +73,16 @@ def create_app(settings: Settings | None = None, embedder: Embedder | None = Non
             return JSONResponse({"status": "ok"})
         # Constant body: never expose internal error text on a public endpoint.
         return JSONResponse({"status": "starting"}, status_code=503)
+
+    db = Database(settings.db_path)
+    service = ChatService(
+        db=db,
+        analyzer=analyzer or NullAnalyzer(),
+        responder=responder or PlaceholderResponder(),
+        today=settings.today,
+        index=lambda: state.index,
+    )
+    register_chat(app, settings=settings, state=state, db=db, service=service)
 
     return app
 

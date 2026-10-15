@@ -9,7 +9,7 @@ import json
 import sqlite3
 from typing import Iterable
 
-from app.db.models import KIND_PUBLIC, CalendarRow, HolidayRow
+from app.db.models import KIND_OPTIONAL, KIND_PUBLIC, CalendarRow, HolidayRow
 
 _SQL_CLEAR_HOLIDAYS = "DELETE FROM holidays"
 _SQL_CLEAR_CALENDARS = "DELETE FROM holiday_calendars"
@@ -85,6 +85,29 @@ def load_holidays(conn: sqlite3.Connection) -> list[HolidayRow]:
             regions=tuple(json.loads(r["regions"])),
         )
         for r in conn.execute(_SQL_ALL_HOLIDAYS)
+    ]
+
+
+_SQL_DOC_HOLIDAYS = (
+    "SELECT region, date, name, doc_id, kind, effective_date, regions FROM holidays "
+    "WHERE doc_id = ? ORDER BY date, region"
+)
+
+
+def get_calendar_holidays(
+    conn: sqlite3.Connection, doc_id: str, regions: Iterable[str]
+) -> list[HolidayRow]:
+    """The public and optional rows of ONE calendar document for the given regions
+    (the requester's region and GLOBAL). Rows of unknown kind are never returned."""
+    wanted = {r.strip().upper() for r in regions if isinstance(r, str)}
+    return [
+        HolidayRow(
+            region=r["region"], date=r["date"], name=r["name"], doc_id=r["doc_id"],
+            kind=r["kind"], effective_date=r["effective_date"],
+            regions=tuple(json.loads(r["regions"])),
+        )
+        for r in conn.execute(_SQL_DOC_HOLIDAYS, (doc_id,))
+        if r["region"].strip().upper() in wanted and r["kind"] in (KIND_PUBLIC, KIND_OPTIONAL)
     ]
 
 
