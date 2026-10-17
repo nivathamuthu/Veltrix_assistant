@@ -61,6 +61,11 @@ def _days(n: int | None) -> str:
     return f"{n} working day{'' if n == 1 else 's'}"
 
 
+def _article(word: str) -> str:
+    """'an' before a vowel sound, 'a' otherwise (leave types are single English words)."""
+    return "an" if (word[:1].casefold() in "aeiou") else "a"
+
+
 def _when(start: str, end: str) -> str:
     return f"on {start}" if start == end else f"from {start} to {end}"
 
@@ -119,7 +124,7 @@ def propose_apply(
         if balance is not None and check.working_days is not None else ""
     return ChatResult(
         answer=(
-            f"Please confirm: submit a {leave_type} leave request {_when(start_date, end_date)} "  # type: ignore[arg-type]
+            f"Please confirm: submit {_article(leave_type)} {leave_type} leave request {_when(start_date, end_date)} "  # type: ignore[arg-type]
             f"({_days(check.working_days)}).{after} {CONFIRM_HINT}"
         ),
         route=ROUTE_TOOL,

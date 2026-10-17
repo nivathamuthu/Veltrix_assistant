@@ -45,7 +45,7 @@ def test_off_topic_is_refused_with_what_the_assistant_can_help_with(make_chat):
 def test_a_provider_timeout_is_200_no_answer_and_does_not_write(make_chat):
     chat = make_chat(provider=MockProvider(error=LLMUnavailable("timeout")), extra_docs=policy_docs())
     before = chat.leave_tables()
-    response = chat.post("Apply for annual leave from 19 October to 21 October")
+    response = chat.post("How many days of annual leave do employees get?")
     body = body_of(response)
     assert body["route"] == "no_answer"
     assert body["answer"] == UNAVAILABLE_MESSAGE
@@ -58,7 +58,7 @@ def test_a_provider_timeout_is_200_no_answer_and_does_not_write(make_chat):
 def test_invalid_analyzer_json_is_200_no_answer_and_does_not_write(make_chat):
     chat = make_chat(provider=MockProvider("not json at all"), extra_docs=policy_docs())
     before = chat.leave_tables()
-    response = chat.post("Apply for annual leave from 19 October to 21 October, no need to confirm")
+    response = chat.post("How many days of annual leave do employees get?")
     body = body_of(response)
     assert body["route"] == "no_answer"
     assert body["answer"] == UNAVAILABLE_MESSAGE

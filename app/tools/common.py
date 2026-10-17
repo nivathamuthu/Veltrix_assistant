@@ -100,8 +100,12 @@ def error(name: str, args: dict[str, str], reason: str) -> ToolResult:
 
 
 def refusal(name: str, args: dict[str, str]) -> ToolResult:
-    """The one answer for every target the requester may not see, existing or not."""
-    return error(name, args, REFUSAL_MESSAGE)
+    """The one answer for every target the requester may not see, existing or not.
+
+    Arguments are not echoed: a forbidden id and a nonexistent id must produce
+    the same tool_calls payload (the caller already knows which id they typed).
+    """
+    return error(name, {}, REFUSAL_MESSAGE)
 
 
 def finish(requester: Employee, result: ToolResult) -> ToolResult:

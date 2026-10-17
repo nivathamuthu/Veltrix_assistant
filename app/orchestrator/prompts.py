@@ -94,6 +94,9 @@ doc_id and locator, copied exactly from the label of the excerpt the claim comes
 - Use only doc_ids and locators that appear in the labels.
 - Report only what the question asks about. If different excerpts give different values for the \
 same rule, report each as its own claim.
+- A stated number of leave days, an entitlement, an allowance or a weekly/monthly limit that \
+relates to the question is a claim. Copy the number and its unit from the excerpt. Do not \
+return an empty claims list when any excerpt states such a figure.
 - not_covered: short phrases naming parts of the question that no excerpt answers. Empty when \
 everything asked is covered.
 - When nothing in the excerpts answers the question, return an empty claims list.

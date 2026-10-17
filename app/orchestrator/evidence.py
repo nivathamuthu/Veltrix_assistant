@@ -163,10 +163,13 @@ def build_claims(
     for item in raw_claims:
         source = (item["doc_id"], item["locator"])
         chunk = by_source.get(source)
-        if chunk is None or source not in sent_pairs:
-            continue  # not in the kept set: an invented or unsent source
-        topic = canon_topic(item["topic"])
         display = _display_value(item["value"])
+        if chunk is None or source not in sent_pairs:
+            chunk = _chunk_for_mislabelled_claim(item["doc_id"], display, chunks, sent_pairs)
+            if chunk is None:
+                continue  # not in the kept set: an invented or unsent source
+            source = (chunk.doc_id, chunk.locator)
+        topic = canon_topic(item["topic"])
         value = canon_value(item["value"])
         if not topic or not value or len(topic) > MAX_TOPIC_CHARS or len(display) > MAX_VALUE_CHARS:
             continue
@@ -177,6 +180,29 @@ def build_claims(
             claims.append(claim)
             shown[claim] = display
     return claims, shown
+
+
+def _chunk_for_mislabelled_claim(
+    doc_id: object,
+    display: str,
+    chunks: Sequence[RetrievedChunk],
+    sent_pairs: set[tuple[str, str]],
+) -> RetrievedChunk | None:
+    """The one sent chunk of ``doc_id`` that contains ``display``, if that pair is unique.
+
+    Models often copy a nearby heading instead of the excerpt label. The value still has
+    to appear in the excerpt (``_supported``); we never invent a source.
+    """
+    if not isinstance(doc_id, str) or not doc_id or not display:
+        return None
+    matches = [
+        chunk
+        for chunk in chunks
+        if chunk.doc_id == doc_id
+        and (chunk.doc_id, chunk.locator) in sent_pairs
+        and _supported(display, chunk.text)
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 # --------------------------------------------------------------------------- #

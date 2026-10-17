@@ -37,9 +37,11 @@ from datetime import date
 from typing import Any, Final
 
 from app.db import Database, Employee, doc_sections, get_calendar_holidays
+from app.llm import deadline as llm_deadline
 from app.llm.budget import KIND_NOTE, CorpusContext, CorpusPart
 from app.llm.client import LLMClient
 from app.llm.guard import GuardedCall
+from app.llm.providers.base import LLMUnavailable, MIN_CALL_SECONDS
 from app.llm.schema import InvalidModelOutput
 from app.orchestrator import evidence, holiday_answer, projection
 from app.orchestrator.analyzer import INTENT_HOLIDAY, Understanding
@@ -115,6 +117,13 @@ class PlaceholderResponder(Responder):
 # --------------------------------------------------------------------------- #
 
 
+def _ensure_time() -> None:
+    """Do not start an LLM call that cannot finish inside the request deadline."""
+    left = llm_deadline.remaining()
+    if left is not None and left < MIN_CALL_SECONDS:
+        raise LLMUnavailable("deadline")
+
+
 def _question(message: str) -> str:
     return f"<question>\n{_QUESTION_CLOSE.sub('[/question]', message)}\n</question>"
 
@@ -173,6 +182,7 @@ class LLMPolicyResponder(Responder):
         if not chunks:
             return self._nothing(balance, NO_COVERAGE_MESSAGE)
 
+        _ensure_time()
         extraction_call = self._client.complete(
             purpose="extract",
             request_id=request_id,
@@ -190,8 +200,8 @@ class LLMPolicyResponder(Responder):
         claims, shown = evidence.build_claims(extraction.claims, chunks, _sent_sources(extraction_call))
         facts = evidence.resolve_facts(claims, shown, requester, reference, extraction.not_covered)
         logger.info(
-            "policy_facts request_id=%s employee=%s claims=%d topics=%d",
-            request_id, employee.employee_id, len(claims), len(facts.topics),
+            "policy_facts request_id=%s employee=%s extracted=%d claims=%d topics=%d",
+            request_id, employee.employee_id, len(extraction.claims), len(claims), len(facts.topics),
         )
         if not facts.has_answer:
             return self._nothing(balance, NO_COVERAGE_MESSAGE)
@@ -201,16 +211,28 @@ class LLMPolicyResponder(Responder):
         if plan is not None:
             parts.append(plan[1])
 
-        compose_call = self._client.complete(
-            purpose="compose",
-            request_id=request_id,
-            system=COMPOSE_SYSTEM + (COMPOSE_HYBRID_ADDENDUM if balance is not None else ""),
-            messages=[{"role": "user", "content": self._compose_message(request, reference, balance)}],
-            corpus=CorpusContext(parts),
-        )
-        answer = self._checked_answer(compose_call.response, facts, plan[0] if plan else None, balance is not None)
+        compose_call: GuardedCall | None = None
+        try:
+            _ensure_time()
+            compose_call = self._client.complete(
+                purpose="compose",
+                request_id=request_id,
+                system=COMPOSE_SYSTEM + (COMPOSE_HYBRID_ADDENDUM if balance is not None else ""),
+                messages=[{"role": "user", "content": self._compose_message(request, reference, balance)}],
+                corpus=CorpusContext(parts),
+            )
+            answer = self._checked_answer(
+                compose_call.response, facts, plan[0] if plan else None, balance is not None
+            )
+        except LLMUnavailable:
+            # Extract already resolved the facts; a 429 on compose must not discard them.
+            logger.warning(
+                "compose_unavailable request_id=%s employee=%s fallback=render_answer",
+                request_id, employee.employee_id,
+            )
+            answer = self._checked_answer("", facts, plan[0] if plan else None, balance is not None)
 
-        sent = _sent_sources(extraction_call, compose_call)
+        sent = _sent_sources(extraction_call, *([compose_call] if compose_call else []))
         citations = tuple(Citation(d, loc) for d, loc in facts.sources() if (d, loc) in sent)
         if facts.not_covered:
             answer += (
@@ -224,7 +246,7 @@ class LLMPolicyResponder(Responder):
             route=ROUTE_HYBRID if balance is not None else ROUTE_RAG,
             citations=citations,
             tool_calls=calls,
-            sent_doc_ids=_sent_doc_ids(extraction_call, compose_call),
+            sent_doc_ids=_sent_doc_ids(extraction_call, *([compose_call] if compose_call else [])),
         )
 
     def _nothing(self, balance: ToolResult | None, message: str) -> ChatResult:
@@ -313,22 +335,36 @@ class LLMPolicyResponder(Responder):
         if not public or locator is None:
             return _no_answer(NO_COVERAGE_MESSAGE)
 
-        call = self._client.complete(
-            purpose="compose",
-            request_id=request_id,
-            system=HOLIDAY_SYSTEM,
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        f"Today's date: {request.today.isoformat()}\n"
-                        f"Date the question is about: {reference.isoformat()}\n"
-                        f"{_question(request.message)}"
-                    ),
-                }
-            ],
-            corpus=CorpusContext(holiday_answer.holiday_parts(public, optional, lookup, locator)),
-        )
+        try:
+            _ensure_time()
+            call = self._client.complete(
+                purpose="compose",
+                request_id=request_id,
+                system=HOLIDAY_SYSTEM,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Today's date: {request.today.isoformat()}\n"
+                            f"Date the question is about: {reference.isoformat()}\n"
+                            f"{_question(request.message)}"
+                        ),
+                    }
+                ],
+                corpus=CorpusContext(holiday_answer.holiday_parts(public, optional, lookup, locator)),
+            )
+        except LLMUnavailable:
+            logger.warning(
+                "compose_unavailable request_id=%s employee=%s fallback=holiday_render",
+                request_id, employee.employee_id,
+            )
+            composed = holiday_answer.render_holidays(public, optional, lookup, locator)
+            return ChatResult(
+                answer=composed,
+                route=ROUTE_RAG,
+                citations=(Citation(lookup.doc_id, locator),),
+                sent_doc_ids=frozenset({lookup.doc_id}),
+            )
         if (lookup.doc_id, locator) not in _sent_sources(call):
             return _no_answer(NO_COVERAGE_MESSAGE)  # nothing citable was sent
         composed = call.response.strip() if isinstance(call.response, str) else ""

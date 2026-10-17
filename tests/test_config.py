@@ -13,6 +13,14 @@ def test_defaults_point_at_data_folder():
     assert s.db_path == Path("./data/veltrix.db")
     assert s.llm_provider == "openai"
     assert s.app_today is None
+    assert s.llm_min_interval_seconds == 0.0
+
+
+def test_min_interval_defaults_to_zero_and_can_be_set(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "google")
+    assert load_settings(env_file=None).llm_min_interval_seconds == 0.0
+    monkeypatch.setenv("LLM_MIN_INTERVAL_SECONDS", "6")
+    assert load_settings(env_file=None).llm_min_interval_seconds == 6.0
 
 
 def test_app_today_overrides_system_date(monkeypatch):

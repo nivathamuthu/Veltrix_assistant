@@ -21,6 +21,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Final, Iterable
 
+from app.logging_setup import scrub_visible_text
 from app.tools.common import STATUS_ERROR, STATUS_PENDING_CONFIRMATION, STATUS_SUCCESS, ToolResult
 
 logger = logging.getLogger("app.orchestrator.response")
@@ -176,7 +177,7 @@ def _enforce(result: ChatResult, readable_doc_ids: Iterable[str] | None) -> Chat
 
     pending = any(call.status == STATUS_PENDING_CONFIRMATION for call in tool_calls)
     return ChatResult(
-        answer=answer,
+        answer=scrub_visible_text(answer),
         route=route,
         citations=citations,
         tool_calls=tool_calls,

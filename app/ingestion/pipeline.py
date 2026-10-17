@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from app.config import Settings
 from app.db import Database, get_pii_values, replace_chunks, replace_holiday_data, run_migrations
 from app.ingestion.corpus import CorpusLoad, load_corpus
-from app.ingestion.embeddings import Embedder, FastEmbedEmbedder
+from app.ingestion.embeddings import Embedder, EmbeddingModelUnavailable, FastEmbedEmbedder
 from app.ingestion.holidays import Extraction, extract_holidays
 from app.ingestion.index import HybridIndex
 from app.ingestion.manifest import ManifestError
@@ -159,9 +159,15 @@ def run_ingestion(
         extraction = build_holidays(db, built.corpus)
         built.seconds["extract_holidays"] = time.monotonic() - holiday_started
     except Exception as exc:  # noqa: BLE001 - any failure must leave /health at 503
-        state.mark_failed(f"{type(exc).__name__}: {exc}")
+        # Our own IngestionError text is identifiers only; anything else is the type,
+        # never str(exc) or a traceback (those can quote file contents).
+        reason = (
+            f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, (IngestionError, EmbeddingModelUnavailable))
+            else type(exc).__name__
+        )
+        state.mark_failed(reason)
         log.error("ingestion failed: %s", type(exc).__name__)
-        log.debug("ingestion failure detail", exc_info=True)
         return
     state.mark_ready(
         built.index,

@@ -114,6 +114,8 @@ def test_a_valid_apply_stores_one_proposal_and_asks_for_confirmation(env):
     answer = result.answer.lower()
     for expected in ("annual", START, END, "3 working day", "confirm"):
         assert expected in answer, (expected, result.answer)
+    assert "an annual" in answer
+    assert "a annual" not in answer
     assert env.tables() == before  # nothing written to the leave tables
     proposal = get_pending("s1", db=env.db)
     assert isinstance(proposal, Proposal)
@@ -127,6 +129,16 @@ def test_a_single_day_is_summarised_without_a_range(env):
     result = env.propose_apply(start="2026-10-19", end="2026-10-19")
     assert "1 working day" in result.answer.lower()
     assert result.answer.count("2026-10-19") >= 1
+
+
+def test_proposal_uses_an_before_a_vowel_sound(env):
+    annual = env.propose_apply(leave_type="annual")
+    assert "an annual" in annual.answer
+    assert "a annual" not in annual.answer
+    env.session("s-sick", "E1")
+    sick = env.propose_apply(leave_type="sick", session_id="s-sick")
+    assert "a sick" in sick.answer
+    assert "an sick" not in sick.answer
 
 
 @pytest.mark.parametrize(

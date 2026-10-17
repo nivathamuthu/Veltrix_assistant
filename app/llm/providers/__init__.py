@@ -37,5 +37,9 @@ def build_provider(settings: Any, **overrides: Any) -> Provider | None:
     adapter = _ADAPTERS[settings.llm_provider]
     _quiet_http_loggers()
     return adapter(
-        api_key=key, model=settings.llm_model, timeout=settings.llm_timeout_seconds, **overrides
+        api_key=key,
+        model=settings.llm_model,
+        timeout=settings.llm_timeout_seconds,
+        min_interval=settings.llm_min_interval_seconds,
+        **overrides
     )

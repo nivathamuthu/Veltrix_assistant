@@ -16,12 +16,21 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+from dataclasses import replace
 from typing import Any, Final
 
 from app.llm.client import LLMClient
 from app.llm.schema import InvalidModelOutput, parse_and_validate
-from app.orchestrator.analyzer import Analyzer, SessionContext, Understanding
+from app.orchestrator.analyzer import (
+    INTENT_BALANCE,
+    INTENT_LIST,
+    MISSING_EMPLOYEE,
+    Analyzer,
+    SessionContext,
+    Understanding,
+)
 from app.orchestrator.prompts import ANALYSIS_SCHEMA, ANALYZER_SYSTEM
+from app.orchestrator.tool_intent import extract_mentioned_employee_id, match_unambiguous_tool
 
 logger = logging.getLogger("app.orchestrator.llm_analyzer")
 
@@ -75,6 +84,10 @@ class LLMAnalyzer(Analyzer):
 
     def analyze(self, message: str, session_context: SessionContext) -> Understanding:
         request_id = session_context.request_id or str(uuid.uuid4())
+        shortcut = match_unambiguous_tool(message)
+        if shortcut is not None:
+            logger.info("analyze_skipped request_id=%s reason=unambiguous_tool intent=%s", request_id, shortcut.intent)
+            return shortcut
         call = self._client.complete(
             purpose="analyze",
             request_id=request_id,
@@ -84,9 +97,23 @@ class LLMAnalyzer(Analyzer):
         )
         try:
             data = parse_and_validate(call.response, ANALYSIS_SCHEMA)
-            return understanding_from(data)
+            understanding = understanding_from(data)
         except InvalidModelOutput:
             # Invalid JSON is not a classification. The service turns this into HTTP 200
             # route no_answer; we must not invent an intent (that could propose a write).
             logger.warning("analysis_invalid request_id=%s", request_id)
             raise
+        return _with_mentioned_employee(understanding, message)
+
+
+def _with_mentioned_employee(understanding: Understanding, message: str) -> Understanding:
+    """If the message already wrote an id, do not ask for one again."""
+    if understanding.intent not in (INTENT_BALANCE, INTENT_LIST):
+        return understanding
+    target = understanding.target_employee_id or extract_mentioned_employee_id(message)
+    if not target:
+        return understanding
+    missing = tuple(f for f in understanding.missing_fields if f != MISSING_EMPLOYEE)
+    if target == understanding.target_employee_id and missing == understanding.missing_fields:
+        return understanding
+    return replace(understanding, target_employee_id=target, missing_fields=missing)

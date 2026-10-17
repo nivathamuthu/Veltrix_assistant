@@ -69,6 +69,7 @@ from app.orchestrator.response import (
     ROUTE_CLARIFY,
     ROUTE_NO_ANSWER,
     ROUTE_REFUSE,
+    TIMEOUT_MESSAGE,
     UNAVAILABLE_MESSAGE,
     ChatResult,
     enforce_invariants,
@@ -101,6 +102,12 @@ _DATE_HINTS: Final = {
     REASON_HALF_DAY: "half days aren't supported",
 }
 _DATES_ASK: Final = "a start date and an end date, like 'from Monday to Wednesday'"
+
+
+def _llm_failure(exc: LLMUnavailable) -> ChatResult:
+    """Deadline is a timeout; anything else is a short-lived provider failure."""
+    answer = TIMEOUT_MESSAGE if exc.reason == "deadline" else UNAVAILABLE_MESSAGE
+    return ChatResult(answer=answer, route=ROUTE_NO_ANSWER)
 
 
 class ChatService:
@@ -153,8 +160,10 @@ class ChatService:
 
         try:
             understanding = self.analyzer.analyze(message, context)
-        except (LLMUnavailable, InvalidModelOutput):
-            # Provider down, timed out, or a reply that is not valid JSON: apology, no write.
+        except LLMUnavailable as exc:
+            # Provider down, deadline, or a reply that is not valid JSON: apology, no write.
+            return self._finish(requester, _llm_failure(exc))
+        except InvalidModelOutput:
             return self._finish(requester, ChatResult(answer=UNAVAILABLE_MESSAGE, route=ROUTE_NO_ANSWER))
         if not isinstance(understanding, Understanding):
             raise TypeError("the analyzer must return an Understanding")
@@ -203,8 +212,8 @@ class ChatService:
             result = self.responder.respond(
                 PolicyRequest(message, requester, u, today, self.db, self._index(), request_id)
             )
-        except LLMUnavailable:
-            return ChatResult(answer=UNAVAILABLE_MESSAGE, route=ROUTE_NO_ANSWER)
+        except LLMUnavailable as exc:
+            return _llm_failure(exc)
         except Exception as exc:  # the responder failing must not break the request
             logger.error("responder_failed employee=%s error=%s", requester.employee_id, type(exc).__name__)
             return ChatResult(answer=NO_ANSWER_MESSAGE, route=ROUTE_NO_ANSWER)

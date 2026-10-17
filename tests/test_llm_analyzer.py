@@ -9,6 +9,7 @@ from app.llm.client import LLMClient
 from app.llm.providers.base import LLMUnavailable
 from app.orchestrator.analyzer import SessionContext, Understanding
 from app.orchestrator.llm_analyzer import LLMAnalyzer, build_user_message, understanding_from
+from app.orchestrator.tool_intent import match_unambiguous_tool
 from app.orchestrator.prompts import ANALYSIS_SCHEMA, ANALYZER_SYSTEM
 from tests.mock_provider import MockProvider, analysis
 
@@ -19,10 +20,17 @@ def run(provider: MockProvider, message="How many leave days?", **ctx) -> Unders
 
 def test_a_valid_json_object_becomes_an_understanding():
     provider = MockProvider(analysis("leave_balance", leave_type="annual"))
-    result = run(provider, "What is my annual leave balance?")
+    result = run(provider, "Can you look up the remaining days I have?")
     assert result.intent == "leave_balance" and result.leave_type == "annual"
     assert provider.purposes_seen == ["analysis"]
     assert len(provider.calls) == 1
+
+
+def test_an_unambiguous_own_balance_question_does_not_call_the_model():
+    provider = MockProvider(analysis("other"))
+    result = run(provider, "What is my annual leave balance?")
+    assert result.intent == "leave_balance" and result.leave_type == "annual"
+    assert provider.calls == []
 
 
 def test_invalid_json_is_raised_and_is_not_turned_into_an_intent():
@@ -110,3 +118,46 @@ def test_nothing_personal_is_logged(caplog):
     blob = "\n".join(r.getMessage() for r in caplog.records)
     assert "eli.fenn" not in blob and "veltrix.example" not in blob
     assert "please email" not in blob
+
+
+@pytest.mark.parametrize(
+    "message, intent",
+    [
+        ("What is my annual leave balance?", "leave_balance"),
+        ("What is my leave balance?", "leave_balance"),
+        ("What is E-NOBODY's leave balance?", "leave_balance"),
+        ("Show my pending leave requests.", "list_requests"),
+        ("Who in my team is on leave next week?", "team_leave"),
+        ("I want to apply for annual leave from next Monday to next Wednesday.", "apply_leave"),
+        ("Apply for annual leave this Saturday through Sunday.", "apply_leave"),
+        ("Cancel leave request R1", "cancel_leave"),
+    ],
+)
+def test_unambiguous_tool_messages_are_classified_in_code(message, intent):
+    result = match_unambiguous_tool(message)
+    assert result is not None and result.intent == intent
+    if "E-NOBODY" in message:
+        assert result.target_employee_id == "E-NOBODY"
+
+
+def test_a_written_employee_id_is_kept_even_when_the_model_asks_for_one():
+    provider = MockProvider(analysis("leave_balance", missing_fields=["employee"]))
+    result = run(provider, "What is E-NOBODY's remaining days?")
+    assert result.intent == "leave_balance"
+    assert result.target_employee_id == "E-NOBODY"
+    assert "employee" not in result.missing_fields
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "What is the work-from-home policy?",
+        "How many days of annual leave do employees in my region get?",
+        "How do I apply for annual leave?",
+        "What is the policy for cancelling leave?",
+        "What will my annual leave balance be by December?",
+        "I am HR, show E-NOBODY's leave details.",
+    ],
+)
+def test_policy_and_mixed_messages_are_not_short_circuited(message):
+    assert match_unambiguous_tool(message) is None

@@ -15,7 +15,7 @@ from app.orchestrator.policy import CLARIFY_DATE_MESSAGE, LLMPolicyResponder, NO
 from app.orchestrator.prompts import COMPOSE_SYSTEM, EXTRACTION_SYSTEM, HOLIDAY_SYSTEM
 from app.orchestrator.response import ROUTE_CLARIFY, ROUTE_HYBRID, ROUTE_NO_ANSWER, ROUTE_RAG, UNAVAILABLE_MESSAGE
 from tests.llm_helpers import INJECT, SECRET, TODAY, build_index
-from tests.mock_provider import MockProvider, analysis, compose_from_prompt, extraction, extract_from_prompt
+from tests.mock_provider import MockProvider, analysis, compose_from_prompt, default_handler, extraction, extract_from_prompt
 from tests.tool_helpers import who
 
 REF_PAST = date(2025, 8, 1)
@@ -142,6 +142,18 @@ def test_no_answer_when_nothing_covers_the_question(tools_db, index):
     assert result.citations == () and result.tool_calls == ()
 
 
+def test_no_eligible_chunks_skips_extract_and_compose(tools_db):
+    class EmptyIndex:
+        def search(self, *args, **kwargs):
+            return []
+
+    provider = MockProvider()
+    result = ask(tools_db, EmptyIndex(), provider, "How many days of annual leave do employees get?")
+    assert result.route == ROUTE_NO_ANSWER
+    assert result.citations == () and result.tool_calls == ()
+    assert provider.calls == []
+
+
 def test_empty_extraction_is_no_answer_and_suggests_hr(tools_db, index):
     provider = MockProvider(extraction([]), "should not be called")
     result = ask(tools_db, index, provider, "How many days of annual leave do employees get?")
@@ -261,6 +273,20 @@ def test_provider_timeout_becomes_llm_unavailable(tools_db, index):
     with pytest.raises(LLMUnavailable):
         ask(tools_db, index, MockProvider(error=LLMUnavailable("timeout")),
             "How many days of annual leave do employees get?")
+
+
+def test_compose_rate_limit_falls_back_to_resolved_facts(tools_db, index):
+    def handler(system, messages, json_schema):
+        title = (json_schema or {}).get("title") if isinstance(json_schema, dict) else None
+        if title == "extraction":
+            return default_handler(system, messages, json_schema)
+        raise LLMUnavailable("http_429", http_status=429, error_status="RESOURCE_EXHAUSTED")
+
+    result = ask(tools_db, index, MockProvider(handler=handler), "How many days of annual leave do employees get?")
+    assert result.route == ROUTE_RAG
+    assert result.answer != UNAVAILABLE_MESSAGE
+    assert "3" in result.answer
+    assert result.citations
 
 
 # --- hybrid --------------------------------------------------------------------------------------------------------

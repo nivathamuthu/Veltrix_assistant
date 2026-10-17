@@ -7,9 +7,10 @@ line with its ``corpus_tokens``. A call with no corpus text passes an empty
 """
 from __future__ import annotations
 
+from app.llm import deadline
 from app.llm.budget import CorpusContext
 from app.llm.guard import GuardedCall, LLMRequest, call_with_corpus
-from app.llm.providers.base import Provider
+from app.llm.providers.base import LLMUnavailable, MIN_CALL_SECONDS, Provider
 
 
 class LLMClient:
@@ -30,6 +31,10 @@ class LLMClient:
 
         Raises ``LLMUnavailable`` (provider down or timed out after its one retry) and
         the guard's errors (a budget or system-prompt violation is a bug, never sent)."""
+
+        left = deadline.remaining()
+        if left is not None and left < MIN_CALL_SECONDS:
+            raise LLMUnavailable("deadline")
 
         def send(request: LLMRequest) -> str:
             return self.provider.complete(request.system, list(request.messages), json_schema)

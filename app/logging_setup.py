@@ -121,6 +121,29 @@ def redact(text: str) -> str:
     return text
 
 
+def mask_email(address: str) -> str:
+    """Public form of an email: first character + ``***`` + domain (rule 6)."""
+    if not isinstance(address, str):
+        return ""
+    local, sep, domain = address.strip().partition("@")
+    if not sep or not local or not domain:
+        return address
+    return f"{local[0]}***@{domain}"
+
+
+def scrub_visible_text(text: str) -> str:
+    """Last line of defence on anything shown to a requester.
+
+    Emails that slipped into an answer are masked; phone numbers are removed.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    text = _EMAIL_RE.sub(lambda m: mask_email(m.group(0)), text)
+    for pattern in _PHONE_RES:
+        text = pattern.sub("", text)
+    return re.sub(r"[ \t]{2,}", " ", text)
+
+
 class RedactingFormatter(logging.Formatter):
     """Formatter that scrubs the *final* line, including exception tracebacks."""
 

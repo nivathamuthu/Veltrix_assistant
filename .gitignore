@@ -1,5 +1,6 @@
 data/
 .env
+_clean_clone/
 __pycache__/
 .venv/
 index/

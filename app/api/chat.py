@@ -182,11 +182,13 @@ def register_chat(app: FastAPI, *, settings: Settings, state: IngestionState, db
 
         body = await _read_body(request)
         if body is None:
+            logger.info("chat_rejected request_id=%s status=400", request_id)
             return _error(400, DETAIL_BAD_REQUEST)
         session_id, message = body
 
         employee_id = (request.headers.get("X-Employee-Id") or "").strip()
         if not employee_id:
+            logger.info("chat_rejected request_id=%s status=401", request_id)
             return _error(401, DETAIL_UNAUTHORIZED)
         if not state.ready:
             return _error(503, DETAIL_UNAVAILABLE)
@@ -202,6 +204,7 @@ def register_chat(app: FastAPI, *, settings: Settings, state: IngestionState, db
                 return _error(403, DETAIL_FORBIDDEN)
             employee = auth.employee
             if auth.status != "ok" or employee is None:
+                logger.info("chat_rejected request_id=%s status=401", request_id)
                 return _error(401, DETAIL_UNAUTHORIZED)
             who = employee.employee_id
             result = await asyncio.wait_for(

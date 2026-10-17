@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Callable
 
 from app.llm.providers.base import Provider
@@ -81,7 +82,7 @@ def extract_from_prompt(text: str) -> str:
     claims, and so an invented doc_id can never appear: only labels that were sent.
     Only topics the question is about are reported (a real model is asked the same)."""
     question = _last_tag(text, "question").casefold()
-    wants_remote = any(w in question for w in ("work from home", "remote", "wfh"))
+    wants_remote = any(w in question for w in ("work from home", "work-from-home", "remote", "wfh"))
     wants_notice = "notice" in question
     wants_accrual = any(w in question for w in ("accrue", "accrual", "balance", "by december", "project"))
     wants_leave = (not wants_remote) and any(
@@ -142,9 +143,26 @@ def default_handler(system: str, messages: list[dict], json_schema: dict | None)
     return compose_from_prompt(blob)
 
 
+_EMPLOYEE_ID = re.compile(r"\b([A-Z]{1,3}\d+[A-Z0-9]*|[A-Z]-[A-Z0-9]+)\b")
+_UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+_REQUEST_ID = re.compile(r"\bR[A-Z0-9]+\b")
+_DATE_HINT = re.compile(
+    r"\b(?:from|to|through|thru|next|this|monday|tuesday|wednesday|thursday|friday|"
+    r"saturday|sunday|january|february|march|april|june|july|august|september|"
+    r"october|november|december|\d{4}-\d{2}-\d{2})\b"
+)
+
+
+def _target_id(raw: str) -> str | None:
+    match = _EMPLOYEE_ID.search(raw)
+    return match.group(1) if match else None
+
+
 def _analyse(blob: str) -> str:
     # Last <message> only: the analyzer system prompt names the tag and the intents.
-    text = _last_tag(blob, "message").casefold()
+    raw = _last_tag(blob, "message")
+    text = raw.casefold()
+    target = _target_id(raw)
     if any(w in text for w in ("capital of", "write a python", "tell me a joke", "weather today", "recipe")):
         return analysis("off_topic")
     if "holiday" in text:
@@ -152,15 +170,27 @@ def _analyse(blob: str) -> str:
     if "balance" in text and any(w in text for w in ("will", "by december", "by the end", "projected")):
         return analysis("policy_question", leave_type="annual", dates_text="by December", needs_leave_data=True)
     if "balance" in text:
-        return analysis("leave_balance")
+        leave = "annual" if "annual" in text else ("sick" if "sick" in text else None)
+        return analysis("leave_balance", leave_type=leave, target_employee_id=target)
+    if "leave details" in text:
+        return analysis("leave_balance", target_employee_id=target)
     if "pending" in text and "request" in text:
         return analysis("list_requests", status="pending")
     if "apply" in text:
-        return analysis("apply_leave")
+        leave = "annual" if "annual" in text else ("sick" if "sick" in text else None)
+        dates = raw.strip() if _DATE_HINT.search(text) else None
+        return analysis("apply_leave", leave_type=leave, dates_text=dates)
     if "team" in text:
         return analysis("team_leave", dates_text="next week")
     if "cancel" in text:
-        return analysis("cancel_leave")
+        rid = None
+        uuid_match = _UUID.search(raw)
+        if uuid_match:
+            rid = uuid_match.group(0)
+        else:
+            req_match = _REQUEST_ID.search(raw)
+            rid = req_match.group(0) if req_match else None
+        return analysis("cancel_leave", request_id=rid)
     return analysis("policy_question")
 
 
@@ -177,12 +207,14 @@ class MockProvider(Provider):
         error: BaseException | None = None,
         errors: list[BaseException] | None = None,
         api_key: str = "test-key",
+        delay: float = 0.0,
     ) -> None:
         super().__init__(api_key=api_key, model="mock", timeout=5.0)
         self._replies = list(replies)
         self.handler = handler
         self.error = error
         self._errors = list(errors or [])
+        self.delay = delay
         self.calls: list[dict[str, Any]] = []
 
     def _complete_once(
@@ -193,6 +225,8 @@ class MockProvider(Provider):
         raise AssertionError("MockProvider answers in complete(), not _complete_once()")
 
     def complete(self, system: str, messages: list[dict], json_schema: dict | None = None) -> str:
+        if self.delay:
+            time.sleep(self.delay)
         self.calls.append({"system": system, "messages": list(messages), "json_schema": json_schema})
         if self._errors:
             raise self._errors.pop(0)

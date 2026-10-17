@@ -75,6 +75,16 @@ def test_an_invented_source_or_a_value_not_in_the_chunk_is_dropped():
     assert claims[0].doc.doc_type == "policy"  # from the chunk / manifest, not the model
 
 
+def test_a_wrong_locator_is_repaired_when_the_value_is_in_exactly_one_sent_chunk():
+    chunks = by_id("POL-V2")
+    sent = {(c.doc_id, c.locator) for c in chunks}
+    raw = [{"topic": "leave days", "value": "3 days", "doc_id": "POL-V2", "locator": "guessed heading"}]
+    claims, shown = build_claims(raw, chunks, sent)
+    assert len(claims) == 1
+    assert claims[0].locator == chunks[0].locator
+    assert shown[claims[0]] == "3 days"
+
+
 def test_document_metadata_comes_from_the_chunk_not_the_model():
     chunks = by_id("FAQ-1")
     sent = {(c.doc_id, c.locator) for c in chunks}

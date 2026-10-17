@@ -9,8 +9,10 @@ from app.logging_setup import (
     REDACTED_PHONE,
     RedactingFormatter,
     LOG_FORMAT,
+    mask_email,
     redact,
     register_pii,
+    scrub_visible_text,
 )
 
 
@@ -82,3 +84,15 @@ def test_formatter_redacts_message_args_and_tracebacks():
     assert "Testperson" not in text
     assert "zed@veltrix.example" not in text
     assert REDACTED_NAME in text and REDACTED_EMAIL in text
+
+
+def test_mask_email_is_first_character_stars_and_domain():
+    assert mask_email("ravi.kumar@veltrix.example") == "r***@veltrix.example"
+    assert mask_email("Eli.Fenn@Veltrix.example") == "E***@Veltrix.example"
+
+
+def test_visible_text_masks_emails_and_drops_phones():
+    text = scrub_visible_text("write to eli.fenn@veltrix.example or call +91 90000 00004")
+    assert "eli.fenn@veltrix.example" not in text
+    assert "e***@veltrix.example" in text
+    assert "90000" not in text and "+91" not in text

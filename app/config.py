@@ -51,6 +51,7 @@ class Settings:
     ingest_startup_delay_seconds: float
     llm_timeout_seconds: float
     request_timeout_seconds: float
+    llm_min_interval_seconds: float  # space calls for free-tier RPM; 0 disables
 
     def today(self) -> date:
         """Reference "today": APP_TODAY if set, else the system date."""
@@ -122,4 +123,5 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         ingest_startup_delay_seconds=_parse_float("INGEST_STARTUP_DELAY_SECONDS", "0"),
         llm_timeout_seconds=_parse_float("LLM_TIMEOUT_SECONDS", "20"),
         request_timeout_seconds=_parse_float("REQUEST_TIMEOUT_SECONDS", "28"),
+        llm_min_interval_seconds=_parse_float("LLM_MIN_INTERVAL_SECONDS", "0"),
     )

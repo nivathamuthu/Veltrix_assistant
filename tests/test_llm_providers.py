@@ -16,8 +16,18 @@ from app.llm.providers import (
     OpenAIProvider,
     build_provider,
 )
-from app.llm.providers.base import Provider, TransientError
+from app.llm.providers.base import (
+    DEADLINE_MARGIN_SECONDS,
+    MIN_CALL_SECONDS,
+    RETRY_DELAY_SECONDS,
+    Provider,
+    TransientError,
+    retry_after_seconds,
+)
+from app.llm.provider_check import format_line
+from app.llm.providers.google_provider import GEMINI_3_THINKING_LEVEL, MAX_OUTPUT_TOKENS, thinking_config_for
 from app.llm.providers.openai_provider import accepts_temperature
+from app.live_smoke import DEFAULT_PAUSE_SECONDS, _parse_args, parse_only, pause_seconds, select_queries
 
 
 def _client(handler) -> httpx.Client:
@@ -123,8 +133,8 @@ def test_reasoning_models_are_called_without_a_temperature(model):
 # --- retry / failures -------------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("status", [429, 500, 502, 503])
-def test_one_retry_on_timeout_or_429_or_5xx_then_success(status):
+@pytest.mark.parametrize("status", [500, 502, 503])
+def test_one_retry_on_timeout_or_5xx_then_success(status):
     hits = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -136,6 +146,20 @@ def test_one_retry_on_timeout_or_429_or_5xx_then_success(status):
     p = OpenAIProvider(api_key="k", model="gpt-4o-mini", client=_client(handler), sleep=lambda _: None)
     assert p.complete("s", [{"role": "user", "content": "q"}]) == "recovered"
     assert hits["n"] == 2
+
+
+def test_429_without_a_retry_delay_is_not_retried():
+    hits = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hits["n"] += 1
+        return httpx.Response(429, json={"error": {"status": "RESOURCE_EXHAUSTED", "code": 429}})
+
+    p = GoogleProvider(api_key="k", model="gemini-x", client=_client(handler), sleep=lambda _: None)
+    with pytest.raises(LLMUnavailable) as captured:
+        p.complete("s", [{"role": "user", "content": "q"}])
+    assert hits["n"] == 1
+    assert captured.value.reason == "http_429"
 
 
 def test_a_second_failure_becomes_llm_unavailable():
@@ -225,6 +249,10 @@ def test_anthropic_puts_the_schema_in_the_system_prompt_and_temperature_0():
     assert seen["url"].endswith("/v1/messages")
 
 
+def _google_ok(*parts, finish="STOP"):
+    return {"candidates": [{"content": {"parts": list(parts)}, "finishReason": finish}]}
+
+
 def test_google_puts_the_key_in_a_header_never_the_url():
     seen = {}
 
@@ -232,15 +260,287 @@ def test_google_puts_the_key_in_a_header_never_the_url():
         seen["url"] = str(request.url)
         seen["key"] = request.headers.get("x-goog-api-key")
         seen["body"] = json.loads(request.content)
-        return httpx.Response(
-            200, json={"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
-        )
+        return httpx.Response(200, json=_google_ok({"text": "ok"}))
 
     p = GoogleProvider(api_key="goog-key", model="gemini-x", client=_client(handler))
     assert p.complete("SYS", [{"role": "user", "content": "q"}]) == "ok"
     assert seen["key"] == "goog-key"
     assert "key=" not in seen["url"] and "goog-key" not in seen["url"]
-    assert seen["body"]["generationConfig"]["temperature"] == 0
+    gen = seen["body"]["generationConfig"]
+    assert gen["temperature"] == 0
+    assert gen["maxOutputTokens"] == MAX_OUTPUT_TOKENS
+    assert gen["thinkingConfig"] == {"thinkingBudget": 0}
+    assert "thinkingLevel" not in gen["thinkingConfig"]
+    assert "responseMimeType" not in gen
+
+
+def test_google_request_disables_thinking_and_sets_json_mime_when_asked():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_google_ok({"text": '{"ok":true}'}))
+
+    schema = {"title": "analysis", "type": "object", "properties": {"ok": {"type": "boolean"}}}
+    p = GoogleProvider(api_key="k", model="gemini-3.8-flash", client=_client(handler))
+    assert p.complete("s", [{"role": "user", "content": "q"}], json_schema=schema) == '{"ok":true}'
+    gen = seen["body"]["generationConfig"]
+    assert gen["temperature"] == 0
+    assert gen["maxOutputTokens"] == MAX_OUTPUT_TOKENS
+    assert gen["maxOutputTokens"] >= 1024
+    assert gen["thinkingConfig"] == {"thinkingLevel": GEMINI_3_THINKING_LEVEL}
+    assert "thinkingBudget" not in gen["thinkingConfig"]
+    assert gen["responseMimeType"] == "application/json"
+    system = seen["body"]["systemInstruction"]["parts"][0]["text"]
+    assert "JSON Schema" in system
+
+
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        ("gemini-3.8-flash", {"thinkingLevel": GEMINI_3_THINKING_LEVEL}),
+        ("gemini-3.0-flash", {"thinkingLevel": GEMINI_3_THINKING_LEVEL}),
+        ("gemini-2.5-flash", {"thinkingBudget": 0}),
+        ("gemini-2.5-pro", {"thinkingBudget": 0}),
+        ("gemini-x", {"thinkingBudget": 0}),
+    ],
+)
+def test_google_sends_exactly_one_thinking_setting(model, expected):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json=_google_ok({"text": "ok"}))
+
+    GoogleProvider(api_key="k", model=model, client=_client(handler)).complete(
+        "s", [{"role": "user", "content": "q"}]
+    )
+    thinking = seen["body"]["generationConfig"]["thinkingConfig"]
+    assert thinking == expected
+    assert not ({"thinkingBudget", "thinkingLevel"} <= set(thinking))
+    assert thinking_config_for(model) == expected
+
+
+def test_provider_check_line_never_includes_the_key_or_the_prompt():
+    secret = "goog-live-not-a-real-key"
+    line = format_line(
+        provider="google",
+        model="gemini-3.8-flash",
+        http_status=400,
+        error_status="INVALID_ARGUMENT",
+        error_code=400,
+        error_message=f"bad thinkingConfig, key={secret}",
+        api_key=secret,
+    )
+    assert "http_status=400" in line
+    assert "error_status=INVALID_ARGUMENT" in line
+    assert "error_code=400" in line
+    assert secret not in line
+    assert "Reply with" not in line
+    assert "[redacted]" in line
+
+
+def test_google_joins_answer_parts_and_ignores_thoughts():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=_google_ok(
+                {"text": "hidden", "thought": True},
+                {"thoughtSignature": "sig"},
+                {"text": '{"intent":'},
+                {"text": '"policy"}'},
+            ),
+        )
+
+    p = GoogleProvider(api_key="k", model="gemini-x", client=_client(handler))
+    assert p.complete("s", [{"role": "user", "content": "q"}]) == '{"intent":"policy"}'
+
+
+@pytest.mark.parametrize(
+    "payload, reason, finish",
+    [
+        ({"candidates": [{"content": {"parts": [{"text": "{"}]}, "finishReason": "MAX_TOKENS"}]}, "truncated", "MAX_TOKENS"),
+        ({"candidates": [{"finishReason": "SAFETY"}]}, "blocked", "SAFETY"),
+        ({"promptFeedback": {"blockReason": "BLOCKLIST"}, "candidates": []}, "blocked", "BLOCKLIST"),
+        ({"candidates": [{"content": {"parts": [{"text": "only thinking", "thought": True}]}, "finishReason": "STOP"}]}, "empty", "STOP"),
+        ({"candidates": []}, "empty", None),
+    ],
+)
+def test_google_empty_blocked_or_truncated_is_a_clean_failure(payload, reason, finish):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    p = GoogleProvider(api_key="k", model="gemini-x", client=_client(handler))
+    with pytest.raises(LLMUnavailable) as captured:
+        p.complete("s", [{"role": "user", "content": "q"}])
+    assert captured.value.reason == reason
+    if finish:
+        assert captured.value.finish_reason == finish
+    assert "prompt" not in str(captured.value).lower()
+
+
+def test_min_interval_paces_successive_calls():
+    slept: list[float] = []
+    hits = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hits["n"] += 1
+        return httpx.Response(200, json=_openai_ok("ok"))
+
+    p = OpenAIProvider(
+        api_key="k", model="gpt-4o-mini", client=_client(handler), sleep=slept.append, min_interval=2.5
+    )
+    assert p.complete("s", [{"role": "user", "content": "q"}]) == "ok"
+    assert p.complete("s", [{"role": "user", "content": "q"}]) == "ok"
+    assert hits["n"] == 2
+    assert slept and slept[-1] == pytest.approx(2.5, abs=0.05)
+
+
+def test_429_waits_retry_after_then_succeeds():
+    hits = {"n": 0}
+    slept: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hits["n"] += 1
+        if hits["n"] == 1:
+            return httpx.Response(
+                429,
+                json={"error": {"status": "RESOURCE_EXHAUSTED", "code": 429, "message": "Please retry in 8.00s"}},
+                headers={"Retry-After": "8"},
+            )
+        return httpx.Response(200, json=_openai_ok("ok"))
+
+    p = OpenAIProvider(api_key="k", model="gpt-4o-mini", client=_client(handler), sleep=slept.append)
+    assert p.complete("s", [{"role": "user", "content": "q"}]) == "ok"
+    assert hits["n"] == 2
+    assert slept == [8.0]
+
+
+def test_429_with_retry_after_past_the_deadline_is_not_retried():
+    hits = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hits["n"] += 1
+        return httpx.Response(
+            429,
+            json={"error": {"status": "RESOURCE_EXHAUSTED", "code": 429}},
+            headers={"Retry-After": "45"},
+        )
+
+    p = OpenAIProvider(api_key="k", model="gpt-4o-mini", client=_client(handler), sleep=lambda _: None)
+    with deadline_of(20):
+        with pytest.raises(LLMUnavailable) as captured:
+            p.complete("s", [{"role": "user", "content": "q"}])
+    assert hits["n"] == 1
+    assert captured.value.reason == "deadline"
+
+
+def test_retry_after_seconds_reads_header_and_google_retry_delay():
+    header = httpx.Response(429, json={}, headers={"Retry-After": "12"})
+    assert retry_after_seconds(header, {}) == 12.0
+    body = {
+        "error": {
+            "status": "RESOURCE_EXHAUSTED",
+            "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7.25s"}],
+        }
+    }
+    assert retry_after_seconds(httpx.Response(429, json=body), body) == 7.25
+    proto = {"error": {"details": [{"retryDelay": {"seconds": 4, "nanos": 500000000}}]}}
+    assert retry_after_seconds(httpx.Response(429, json=proto), proto) == 4.5
+
+
+def test_429_with_google_retry_delay_waits_then_retries_once():
+    hits = {"n": 0}
+    slept: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hits["n"] += 1
+        if hits["n"] == 1:
+            return httpx.Response(
+                429,
+                json={
+                    "error": {
+                        "status": "RESOURCE_EXHAUSTED",
+                        "details": [{"retryDelay": "3s"}],
+                    }
+                },
+            )
+        return httpx.Response(200, json=_google_ok({"text": "ok"}))
+
+    p = GoogleProvider(api_key="k", model="gemini-x", client=_client(handler), sleep=slept.append)
+    assert p.complete("s", [{"role": "user", "content": "q"}]) == "ok"
+    assert hits["n"] == 2
+    assert slept == [3.0]
+
+
+def test_retry_is_skipped_when_the_deadline_has_almost_run_out():
+    hits = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        hits["n"] += 1
+        return httpx.Response(503, json={})
+
+    p = OpenAIProvider(api_key="k", model="gpt-4o-mini", client=_client(handler), sleep=lambda _: None)
+    with deadline_of(MIN_CALL_SECONDS + DEADLINE_MARGIN_SECONDS + RETRY_DELAY_SECONDS - 0.2):
+        with pytest.raises(LLMUnavailable) as captured:
+            p.complete("s", [{"role": "user", "content": "q"}])
+    assert hits["n"] == 1
+    assert captured.value.reason == "deadline"
+
+
+def test_failed_call_logs_status_codes_attempt_and_elapsed_never_secrets(caplog):
+    secret_key = "goog-live-not-a-real-key"
+    secret_prompt = "zebra-quartz-prompt-17"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={
+                "error": {
+                    "code": 429,
+                    "status": "RESOURCE_EXHAUSTED",
+                    "message": secret_prompt,
+                }
+            },
+        )
+
+    p = GoogleProvider(api_key=secret_key, model="gemini-x", client=_client(handler), sleep=lambda _: None)
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(LLMUnavailable):
+        p.complete(secret_prompt, [{"role": "user", "content": secret_prompt}])
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("llm_failed")]
+    assert len(lines) == 1  # 429 with no retry delay is not retried
+    first = lines[0]
+    assert "provider=google" in first
+    assert "http_status=429" in first
+    assert "error_status=RESOURCE_EXHAUSTED" in first
+    assert "error_code=429" in first
+    assert "finish_reason=-" in first
+    assert "attempt=1" in first
+    assert "elapsed=" in first
+    text = "\n".join(lines)
+    for leaked in (secret_key, secret_prompt, "zebra"):
+        assert leaked not in text
+
+
+def test_live_smoke_pause_defaults_to_four_seconds_and_can_be_disabled():
+    assert pause_seconds({}) == DEFAULT_PAUSE_SECONDS == 12.0
+    assert pause_seconds({"LIVE_SMOKE_NO_PAUSE": "1"}) == 0.0
+    assert pause_seconds({"LIVE_SMOKE_NO_PAUSE": "true"}) == 0.0
+    assert pause_seconds({"LIVE_SMOKE_PAUSE_SECONDS": "0"}) == 0.0
+    assert pause_seconds({"LIVE_SMOKE_PAUSE_SECONDS": "2.5"}) == 2.5
+
+
+def test_live_smoke_only_selects_the_given_query_numbers():
+    assert parse_only("") is None
+    assert parse_only("1,11,12,13") == frozenset({1, 11, 12, 13})
+    assert parse_only(" 2, 2, 5 ") == frozenset({2, 5})
+    with pytest.raises(ValueError):
+        parse_only("1,policy")
+    rows = [(1, "a", "s", "q1"), (2, "a", "s", "q2"), (11, "m", "s", "q11")]
+    assert [n for n, *_ in select_queries(rows, parse_only("1,11"))] == [1, 11]
+    assert select_queries(rows, None) == rows
+    assert _parse_args(["--only", "1,11,12,13"]).only == "1,11,12,13"
 
 
 # --- logs never carry prompts, responses or keys ------------------------------------------------------------------
