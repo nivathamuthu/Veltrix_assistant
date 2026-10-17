@@ -7,7 +7,8 @@ invariants and the citation filter are applied afterwards whatever this returns.
 Two responders:
 
 * ``PlaceholderResponder``: no LLM; a polite no_answer (used when no API key is configured).
-* ``LLMPolicyResponder``: the real pipeline, at most TWO LLM calls (plus the analyzer's one):
+* ``LLMPolicyResponder``: the real pipeline, at most THREE LLM calls (plus the analyzer's one,
+  four per message): extract, one optional recover extract, compose.
 
   1. reference date, in code (``resolve_reference_date``); unclear => ask for a specific date;
   2. ``retrieve_for_question``: pre-filtered by role, region and date BEFORE any scoring, so a
@@ -39,7 +40,7 @@ from typing import Any, Final
 from app.db import Database, Employee, doc_sections, get_calendar_holidays
 from app.llm import deadline as llm_deadline
 from app.llm.budget import KIND_NOTE, CorpusContext, CorpusPart
-from app.llm.client import LLMClient
+from app.llm.client import LLMClient, MAX_CALLS_PER_MESSAGE, message_calls
 from app.llm.guard import GuardedCall
 from app.llm.providers.base import LLMUnavailable, MIN_CALL_SECONDS
 from app.llm.schema import InvalidModelOutput
@@ -191,19 +192,45 @@ class LLMPolicyResponder(Responder):
             corpus=evidence.corpus_of(chunks),
             json_schema=EXTRACTION_SCHEMA,
         )
+        extract_invalid = False
         try:
             extraction = evidence.parse_extraction(extraction_call.response)
         except InvalidModelOutput:
             logger.warning("extraction_invalid request_id=%s employee=%s", request_id, employee.employee_id)
-            return _no_answer(UNAVAILABLE_MESSAGE)
+            extract_invalid = True
+            extraction = evidence.Extraction((), ())
 
-        claims, shown = evidence.build_claims(extraction.claims, chunks, _sent_sources(extraction_call))
-        facts = evidence.resolve_facts(claims, shown, requester, reference, extraction.not_covered)
+        sent_extract = _sent_sources(extraction_call)
+        recover_call: GuardedCall | None = None
+        if not extract_invalid:
+            recover_call, extraction, sent_extract = self._recover_skipped_documents(
+                request, extraction_call, extraction, chunks, sent_extract
+            )
+
+        claims, shown, dropped, names, extracted, model_kept = evidence.build_claims_report(
+            extraction.claims, chunks, sent_extract
+        )
+        facts = evidence.resolve_facts(
+            claims, shown, requester, reference, extraction.not_covered, names=names
+        )
+        retrieved_docs = sorted({c.doc_id for c in chunks})
+        sent_docs = sorted({d for d, _ in sent_extract})
         logger.info(
-            "policy_facts request_id=%s employee=%s extracted=%d claims=%d topics=%d",
-            request_id, employee.employee_id, len(extraction.claims), len(claims), len(facts.topics),
+            "policy_debug request_id=%s employee=%s chunks_retrieved=%d retrieved_doc_ids=%s "
+            "sent_doc_ids=%s claims_extracted=%d claims_kept=%d claims_per_doc=%s dropped_reasons=%s",
+            request_id,
+            employee.employee_id,
+            len(chunks),
+            ",".join(retrieved_docs) or "none",
+            ",".join(sent_docs) or "none",
+            extracted,
+            model_kept,
+            evidence.claims_per_doc(claims),
+            ",".join(dropped) or "none",
         )
         if not facts.has_answer:
+            if extract_invalid:
+                return _no_answer(UNAVAILABLE_MESSAGE)
             return self._nothing(balance, NO_COVERAGE_MESSAGE)
 
         parts = evidence.fact_parts(facts)
@@ -232,7 +259,11 @@ class LLMPolicyResponder(Responder):
             )
             answer = self._checked_answer("", facts, plan[0] if plan else None, balance is not None)
 
-        sent = _sent_sources(extraction_call, *([compose_call] if compose_call else []))
+        sent = _sent_sources(
+            extraction_call,
+            *([recover_call] if recover_call else []),
+            *([compose_call] if compose_call else []),
+        )
         citations = tuple(Citation(d, loc) for d, loc in facts.sources() if (d, loc) in sent)
         if facts.not_covered:
             answer += (
@@ -246,8 +277,53 @@ class LLMPolicyResponder(Responder):
             route=ROUTE_HYBRID if balance is not None else ROUTE_RAG,
             citations=citations,
             tool_calls=calls,
-            sent_doc_ids=_sent_doc_ids(extraction_call, *([compose_call] if compose_call else [])),
+            sent_doc_ids=_sent_doc_ids(
+                extraction_call,
+                *([recover_call] if recover_call else []),
+                *([compose_call] if compose_call else []),
+            ),
         )
+
+    def _recover_skipped_documents(
+        self,
+        request: PolicyRequest,
+        first_call: GuardedCall,
+        extraction: evidence.Extraction,
+        chunks: list,
+        sent: set[tuple[str, str]],
+    ) -> tuple[GuardedCall | None, evidence.Extraction, set[tuple[str, str]]]:
+        """One extra extract, only for sent documents the first reply skipped."""
+        model_docs = [c["doc_id"] for c in extraction.claims if isinstance(c.get("doc_id"), str)]
+        skipped = evidence.skipped_numeric_documents(request.message, chunks, sent, model_docs)
+        if not skipped:
+            return None, extraction, sent
+        if message_calls() + 2 > MAX_CALLS_PER_MESSAGE:
+            return None, extraction, sent
+        left = llm_deadline.remaining()
+        if left is not None and left < MIN_CALL_SECONDS:
+            return None, extraction, sent
+        try:
+            extra = self._client.complete(
+                purpose="extract",
+                request_id=request.request_id or "req",
+                system=EXTRACTION_SYSTEM,
+                messages=[{"role": "user", "content": _question(request.message)}],
+                corpus=evidence.corpus_of(skipped),
+                json_schema=EXTRACTION_SCHEMA,
+            )
+        except LLMUnavailable:
+            logger.warning(
+                "extract_recover_unavailable request_id=%s employee=%s",
+                request.request_id or "req",
+                request.requester.employee_id,
+            )
+            return None, extraction, sent
+        try:
+            more = evidence.parse_extraction(extra.response)
+        except InvalidModelOutput:
+            return extra, extraction, sent | _sent_sources(extra)
+        merged = evidence.Extraction(extraction.claims + more.claims, extraction.not_covered + more.not_covered)
+        return extra, merged, sent | _sent_sources(extra)
 
     def _nothing(self, balance: ToolResult | None, message: str) -> ChatResult:
         """No document answers: for a hybrid question the leave data alone is still shown."""

@@ -278,7 +278,29 @@ def resolve_topic(
     # Still level after all three tests.
     if len({_value_key(c.value) for c in remaining}) == 1:
         return Resolution(STATUS_DECIDED, remaining[0], tuple(remaining), DECIDED_BY_AGREEMENT)
+    # One document's tenure-band table: different values that each name a band
+    # are complementary, not a self-conflict. Bare numbers with no band still conflict.
+    if _same_document(remaining) and _are_banded_values(remaining):
+        return Resolution(STATUS_DECIDED, remaining[0], tuple(remaining), DECIDED_BY_AGREEMENT)
     return Resolution(STATUS_CONFLICT, None, tuple(remaining))
+
+
+def _same_document(claims: list[Claim]) -> bool:
+    return len({c.doc.doc_id for c in claims}) == 1
+
+
+def _are_banded_values(claims: list[Claim]) -> bool:
+    """True when every value has a number plus distinct qualifying text (a tenure band)."""
+    extras: list[str] = []
+    for claim in claims:
+        text = str(claim.value)
+        if not _PLAIN_NUMBER.search(text):
+            return False
+        rest = " ".join(_PLAIN_NUMBER.sub(" ", text).casefold().split())
+        if not rest:
+            return False
+        extras.append(rest)
+    return len(set(extras)) == len(extras)
 
 
 # --------------------------------------------------------------------------- #
@@ -336,3 +358,22 @@ def upcoming_change(
             continue
         return candidate
     return None
+
+
+def upcoming_changes(
+    claims: Iterable[Claim], requester: Requester, reference_date: date
+) -> tuple[Claim, ...]:
+    """Every winning claim from the document ``upcoming_change`` would report.
+
+    A tenure-band table on that future document is several complementary values
+    of one topic; the caller should show them all next to the current rates.
+    """
+    first = upcoming_change(claims, requester, reference_date)
+    if first is None:
+        return ()
+    items = _checked(claims)
+    outcome = resolve_topic(items, first.doc.effective_date, requester)
+    if outcome.status != STATUS_DECIDED:
+        return (first,)
+    same = tuple(c for c in outcome.claims if c.doc.doc_id == first.doc.doc_id)
+    return same or (first,)

@@ -1,6 +1,7 @@
 """Policy / holiday responder (Phase 7b): retrieve, extract, resolve, compose. Mock provider only."""
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date
 
@@ -14,8 +15,17 @@ from app.orchestrator.analyzer import Understanding
 from app.orchestrator.policy import CLARIFY_DATE_MESSAGE, LLMPolicyResponder, NO_COVERAGE_MESSAGE, PolicyRequest
 from app.orchestrator.prompts import COMPOSE_SYSTEM, EXTRACTION_SYSTEM, HOLIDAY_SYSTEM
 from app.orchestrator.response import ROUTE_CLARIFY, ROUTE_HYBRID, ROUTE_NO_ANSWER, ROUTE_RAG, UNAVAILABLE_MESSAGE
+from app.orchestrator.evidence import build_claims_report
+from app.retrieval.pipeline import RetrievedChunk
 from tests.llm_helpers import INJECT, SECRET, TODAY, build_index
-from tests.mock_provider import MockProvider, analysis, compose_from_prompt, default_handler, extraction, extract_from_prompt
+from tests.mock_provider import (
+    MockProvider,
+    analysis,
+    compose_from_prompt,
+    default_handler,
+    extraction,
+    extract_from_prompt,
+)
 from tests.tool_helpers import who
 
 REF_PAST = date(2025, 8, 1)
@@ -155,12 +165,18 @@ def test_no_eligible_chunks_skips_extract_and_compose(tools_db):
 
 
 def test_empty_extraction_is_no_answer_and_suggests_hr(tools_db, index):
-    provider = MockProvider(extraction([]), "should not be called")
+    def handler(system, messages, schema):
+        if (schema or {}).get("title") == "extraction":
+            return extraction([])
+        raise AssertionError("compose should not run when every extract is empty")
+
+    provider = MockProvider(handler=handler)
     result = ask(tools_db, index, provider, "How many days of annual leave do employees get?")
     assert result.route == ROUTE_NO_ANSWER
     assert "HR" in result.answer or "hr" in result.answer.lower()
     assert result.citations == ()
-    assert len(provider.calls) == 1  # extract only; no compose
+    assert all((c.get("json_schema") or {}).get("title") == "extraction" for c in provider.calls)
+    assert 1 <= len(provider.calls) <= 2
 
 
 def test_partial_coverage_answers_what_is_covered_and_states_what_is_not(tools_db, index):
@@ -317,6 +333,241 @@ def test_hybrid_projects_the_balance_in_code_and_returns_tool_plus_citations(too
 
 
 # --- holidays ------------------------------------------------------------------------------------------------------
+
+
+def test_policy_debug_log_is_counts_only(tools_db, index, caplog):
+    caplog.set_level(logging.INFO)
+    ask(tools_db, index, MockProvider(), "How many days of annual leave do employees get?")
+    debug = [r.getMessage() for r in caplog.records if "policy_debug" in r.getMessage()]
+    assert debug
+    line = debug[0]
+    assert "chunks_retrieved=" in line
+    assert "retrieved_doc_ids=" in line
+    assert "sent_doc_ids=" in line
+    assert "claims_extracted=" in line
+    assert "claims_kept=" in line
+    assert "claims_per_doc=" in line
+    assert "dropped_reasons=" in line
+    extracted = int(line.split("claims_extracted=")[1].split()[0])
+    kept = int(line.split("claims_kept=")[1].split()[0])
+    assert extracted >= kept
+    assert "POL-V2" in line
+    assert "Annual leave entitlement" not in line
+    assert "<question>" not in line
+    assert "You extract facts" not in line
+
+
+def test_extract_prompt_groups_chunks_by_document(tools_db, index):
+    provider = MockProvider()
+    ask(tools_db, index, provider, "How many days of annual leave do employees get?")
+    extract = next(c for c in provider.calls if (c.get("json_schema") or {}).get("title") == "extraction")
+    blob = "\n".join([extract["system"], *(m.get("content", "") for m in extract["messages"])])
+    assert "Document POL-V2, effective" in blob
+    assert "every document" in EXTRACTION_SYSTEM.lower()
+    assert "one claim per band per document" in EXTRACTION_SYSTEM.lower()
+    assert "do not stop after the first document" in EXTRACTION_SYSTEM.lower()
+
+
+def test_safety_net_extract_recovers_a_skipped_document(tools_db):
+    from app.ingestion.index import HybridIndex
+    from tests.fake_embedder import FakeEmbedder
+    from tests.llm_helpers import chunk
+    from tests.mock_provider import claim
+
+    idx = HybridIndex.build(
+        [
+            chunk(
+                "DOC-NOW::1",
+                "Annual leave entitlement is 8 days for every employee.",
+                day="2026-01-01",
+                locator="Now",
+            ),
+            chunk(
+                "DOC-SKIP::1",
+                "The older schedule says annual leave is 11 days for every employee.",
+                day="2025-01-01",
+                locator="Skip",
+            ),
+        ],
+        FakeEmbedder(),
+    )
+    extracts = {"n": 0}
+
+    def handler(system, messages, schema):
+        title = (schema or {}).get("title") if isinstance(schema, dict) else None
+        blob = "\n".join(m.get("content", "") for m in messages)
+        if title == "extraction":
+            extracts["n"] += 1
+            if extracts["n"] == 1:
+                return extraction([claim("leave days", "8 days", "DOC-NOW", "Now")])
+            return extract_from_prompt(blob)
+        return compose_from_prompt(blob)
+
+    provider = MockProvider(handler=handler)
+    result = ask(
+        tools_db, idx, provider,
+        "How many days of annual leave do employees get?",
+        today=date(2026, 10, 15),
+    )
+    assert extracts["n"] == 2
+    recover = [c for c in provider.calls if (c.get("json_schema") or {}).get("title") == "extraction"][1]
+    recover_blob = "\n".join(m.get("content", "") for m in recover["messages"])
+    assert "DOC-SKIP" in recover_blob
+    assert "DOC-NOW" not in recover_blob
+    assert result.route == ROUTE_RAG
+    assert "8" in result.answer
+    assert len(provider.calls) <= 4
+
+
+def test_real_accrual_schedule_chunks_produce_three_current_bands():
+    from tests.test_retrieval_pipeline import _accrual_schedule_chunks
+
+    entry, schedule = _accrual_schedule_chunks()
+    if entry is None:
+        pytest.skip("annual leave accrual schedule is not in the local corpus pack")
+    chunks = [
+        RetrievedChunk(
+            c.chunk_id, c.doc_id, c.doc_type, tuple(c.regions),
+            date.fromisoformat(c.effective_date), c.locator, c.text, c.token_count, 1.0, c.access_level,
+        )
+        for c in schedule
+    ]
+    sent = {(c.doc_id, c.locator) for c in chunks}
+    claims, shown, _dropped, _names, extracted, model_kept = build_claims_report([], chunks, sent)
+    assert extracted == 0 and model_kept == 0 and extracted >= model_kept
+    values = " ".join(shown.values())
+    assert "1.5" in values and "1.75" in values and "2.0" in values
+    assert len({c.value for c in claims}) >= 3
+
+
+def test_current_and_upcoming_both_reach_compose(tools_db):
+    from app.ingestion.index import HybridIndex
+    from tests.fake_embedder import FakeEmbedder
+    from tests.llm_helpers import chunk
+    from tests.test_orch_evidence import TBL_RATES, V3_CHANGES
+
+    idx = HybridIndex.build(
+        [
+            chunk("TBL-LEAVE-ACCRUAL::rates", TBL_RATES, day="2025-01-01", locator="1. Accrual rates"),
+            chunk(
+                "TBL-LEAVE-ACCRUAL::title",
+                "Annual Leave Accrual Schedule",
+                day="2025-01-01",
+                locator="Annual Leave Accrual Schedule",
+            ),
+            chunk("POL-LEAVE-GLOBAL-V3::changes", V3_CHANGES, day="2027-01-01", locator="1. What changes"),
+        ],
+        FakeEmbedder(),
+    )
+    provider = MockProvider()
+    result = ask(
+        tools_db, idx, provider,
+        "How many days of annual leave do employees in my region get?",
+        today=date(2026, 10, 15),
+    )
+    compose = [c for c in provider.calls if not (c.get("json_schema") or {}).get("title")]
+    assert compose
+    blob = "\n".join(m.get("content", "") for c in compose for m in c["messages"])
+    assert "In force" in blob
+    assert "UPCOMING" in blob
+    assert "1.5" in result.answer and "2.25" in result.answer
+    assert "2027-01-01" in result.answer
+
+
+def test_compose_does_not_say_settled_by_or_bracketed_doc_ids(tools_db, index):
+    result = ask(tools_db, index, MockProvider(), "How many days of annual leave do employees get?")
+    low = result.answer.lower()
+    assert "settled by" not in low
+    assert "regional scope" not in low
+    assert "[POL-V2" not in result.answer
+    assert "[POL-V3" not in result.answer
+    assert "3" in result.answer
+
+
+def test_upcoming_change_states_current_rates_next_to_upcoming(tools_db, index):
+    result = ask(tools_db, index, MockProvider(), "Is the annual leave entitlement changing next year?")
+    assert result.route == ROUTE_RAG
+    assert "3" in result.answer
+    assert "4" in result.answer
+    assert "2027-01-01" in result.answer
+    assert "not in force yet" in result.answer.lower()
+    assert "settled by" not in result.answer.lower()
+    assert "[POL-V3" not in result.answer
+
+
+def test_mock_extract_reads_table_bands_as_one_topic():
+    blob = (
+        "[TBL-LEAVE-ACCRUAL | Annual Leave Accrual Schedule | effective 2025-01-01]\n"
+        "Annual Leave Accrual Schedule\n"
+        "Row: Tenure under 2 years | Accrual 1.5 days/month\n"
+        "Row: Tenure 2 to 5 years | Accrual 1.75 days/month\n"
+        "<question>\nHow many days of annual leave do employees in my region get?\n</question>"
+    )
+    parsed = json.loads(extract_from_prompt(blob))
+    values = [c["value"] for c in parsed["claims"]]
+    topics = {c["topic"] for c in parsed["claims"]}
+    assert topics == {"annual leave accrual"}
+    assert any("1.5" in v and "under 2 years" in v for v in values)
+    assert any("1.75" in v and "2 to 5 years" in v for v in values)
+    composed = compose_from_prompt(
+        "[TBL-LEAVE-ACCRUAL | Annual Leave Accrual Schedule | effective 2025-01-01]\n"
+        "Rule: annual leave accrual\n"
+        "In force on 2026-10-15: 1.5 days per month for under 2 years\n"
+        "Source name: Annual Leave Accrual Schedule\n"
+        "Effective date: 2025-01-01\n"
+        "[TBL-LEAVE-ACCRUAL | Annual Leave Accrual Schedule | effective 2025-01-01]\n"
+        "Rule: annual leave accrual\n"
+        "In force on 2026-10-15: 1.75 days per month for 2 to 5 years\n"
+        "Source name: Annual Leave Accrual Schedule\n"
+        "Effective date: 2025-01-01\n"
+        "[POL-V3 | Leave policy v3 | effective 2027-01-01]\n"
+        "Rule: annual leave accrual\n"
+        "UPCOMING from 2027-01-01 (not in force yet): 2.0 days per month for under 2 years\n"
+        "Source name: Leave policy v3\n"
+        "Effective date: 2027-01-01\n"
+    )
+    assert "1.5" in composed and "1.75" in composed and "2.0" in composed
+    assert "Annual Leave Accrual Schedule" in composed
+    assert "2027-01-01" in composed
+    assert "settled by" not in composed.lower()
+    assert "[POL-V3" not in composed
+    assert "TBL-LEAVE-ACCRUAL" not in composed
+
+
+def test_how_many_days_uses_schedule_rows_when_extract_returns_only_the_future_band(tools_db):
+    from app.ingestion.index import HybridIndex
+    from tests.fake_embedder import FakeEmbedder
+    from tests.llm_helpers import chunk
+    from tests.test_orch_evidence import TBL_RATES, V3_CHANGES
+
+    idx = HybridIndex.build(
+        [
+            chunk("TBL-LEAVE-ACCRUAL::rates", TBL_RATES, day="2025-01-01", locator="1. Accrual rates"),
+            chunk(
+                "TBL-LEAVE-ACCRUAL::title",
+                "Annual Leave Accrual Schedule",
+                day="2025-01-01",
+                locator="Annual Leave Accrual Schedule",
+            ),
+            chunk("POL-LEAVE-GLOBAL-V3::changes", V3_CHANGES, day="2027-01-01", locator="1. What changes"),
+        ],
+        FakeEmbedder(),
+    )
+    result = ask(
+        tools_db,
+        idx,
+        MockProvider(extraction([])),
+        "How many days of annual leave do employees in my region get?",
+        today=date(2026, 10, 15),
+    )
+    assert result.route == ROUTE_RAG
+    cited = {c.doc_id for c in result.citations}
+    assert "TBL-LEAVE-ACCRUAL" in cited
+    assert "1.5" in result.answer and "1.75" in result.answer
+    assert "2.25" in result.answer and "2027-01-01" in result.answer
+    assert "my region" not in result.answer.lower()
+    assert "settled by" not in result.answer.lower()
+    assert "[POL-LEAVE" not in result.answer
 
 
 def test_holiday_question_cites_the_calendar_and_keeps_optional_optional(tools_db, index):

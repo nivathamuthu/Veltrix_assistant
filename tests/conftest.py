@@ -11,6 +11,7 @@ import pytest
 
 from app.config import load_settings
 from app.db import Database
+from app.llm.client import begin_message
 from app.logging_setup import clear_pii
 from tests.db_helpers import build_synthetic_db
 
@@ -27,6 +28,7 @@ def _clean_env_and_pii(monkeypatch):
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     clear_pii()
+    begin_message()
     yield
     clear_pii()
 

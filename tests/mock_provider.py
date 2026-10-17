@@ -18,7 +18,11 @@ _LABEL = re.compile(
     r"\[(?P<doc>[^|\]]+?)\s*\|\s*(?P<loc>[^|\]]+?)\s*\|\s*effective\s+(?P<date>\d{4}-\d{2}-\d{2})\]"
 )
 _DAYS = re.compile(r"(\d+(?:\.\d+)?)\s+days?", re.IGNORECASE)
-_PER = re.compile(r"(\d+(?:\.\d+)?)\s+days?\s+per\s+(month|year)", re.IGNORECASE)
+_RATE = re.compile(
+    r"(?P<n>\d+(?:\.\d+)?)\s*(?:days?\s*/\s*(?P<slash>month|year)|days?\s+per\s+(?P<per>month|year))",
+    re.IGNORECASE,
+)
+_BAND_AFTER = re.compile(r"(?:for|if|when)\s+([^.\n;|]+)", re.IGNORECASE)
 _WEEK = re.compile(r"(two|three|four|five|\d+)\s+days?\s+each\s+week", re.IGNORECASE)
 _NOTICE = re.compile(r"(\d+)\s+weeks?", re.IGNORECASE)
 _WORD_NUM = {"two": "2", "three": "3", "four": "4", "five": "5"}
@@ -75,12 +79,53 @@ def _last_tag(text: str, name: str) -> str:
     return matches[-1].group(1) if matches else ""
 
 
+def _table_rates(body: str) -> list[str]:
+    """Accrual or entitlement rates, one value per tenure band (band stays in the value)."""
+    values: list[str] = []
+    seen: set[str] = set()
+    for line in body.splitlines() or [body]:
+        for match in _RATE.finditer(line):
+            unit = match.group("slash") or match.group("per")
+            value = f"{match.group('n')} days per {unit.lower()}"
+            band = ""
+            stripped = line.strip()
+            if stripped.lower().startswith("row:"):
+                others = [
+                    cell.strip()
+                    for cell in stripped.split(":", 1)[-1].split("|")
+                    if match.group(0) not in cell
+                ]
+                band = " ".join(others).strip()
+            if not band:
+                after = _BAND_AFTER.search(line[match.end() :])
+                if after:
+                    band = after.group(1).strip()
+            if band:
+                value = f"{value} for {band}"
+            if value not in seen:
+                seen.add(value)
+                values.append(value)
+    return values
+
+
+def _flat_day_count(body: str) -> str | None:
+    """A leave-day figure that is not a per-month / per-year rate."""
+    for match in _DAYS.finditer(body):
+        tail = body[match.end() : match.end() + 16].lower()
+        if tail.lstrip().startswith("per ") or tail.lstrip().startswith("/"):
+            continue
+        return f"{match.group(1)} days"
+    return None
+
+
 def extract_from_prompt(text: str) -> str:
     """A tiny deterministic extractor: report what the labelled excerpts actually say.
 
     Used so a modified corpus (a different number in the same document) changes the
     claims, and so an invented doc_id can never appear: only labels that were sent.
-    Only topics the question is about are reported (a real model is asked the same)."""
+    Only topics the question is about are reported (a real model is asked the same).
+    A table of tenure-band rates is several claims for one topic, band in the value.
+    """
     question = _last_tag(text, "question").casefold()
     wants_remote = any(w in question for w in ("work from home", "work-from-home", "remote", "wfh"))
     wants_notice = "notice" in question
@@ -90,11 +135,11 @@ def extract_from_prompt(text: str) -> str:
     )
     claims: list[dict] = []
     for doc_id, locator, body in _blocks(text):
-        if _PER.search(body):
-            if wants_accrual:
-                match = _PER.search(body)
-                claims.append(claim("annual leave accrual", match.group(0).lower(), doc_id, locator))
-            continue
+        rates = _table_rates(body)
+        table_like = len(rates) > 1 or "row:" in body.lower()
+        if rates and (wants_accrual or (wants_leave and table_like)):
+            for value in rates:
+                claims.append(claim("annual leave accrual", value, doc_id, locator))
         if wants_remote and "each week" in body.lower() and "home" in body.lower():
             match = _WEEK.search(body)
             if match:
@@ -102,32 +147,77 @@ def extract_from_prompt(text: str) -> str:
                 claims.append(claim("remote work days", f"{n} days each week", doc_id, locator))
         elif wants_notice and "notice" in body.lower() and _NOTICE.search(body):
             claims.append(claim("notice period", f"{_NOTICE.search(body).group(1)} weeks", doc_id, locator))
-        elif wants_leave and "leave" in body.lower() and _DAYS.search(body):
-            claims.append(claim("leave days", f"{_DAYS.search(body).group(1)} days", doc_id, locator))
+        elif wants_leave and "leave" in body.lower():
+            flat = _flat_day_count(body)
+            if flat:
+                claims.append(claim("leave days", flat, doc_id, locator))
     return extraction(claims)
 
 
 def compose_from_prompt(text: str) -> str:
-    """Restate the resolved facts the composition call was given, so the answer follows them."""
-    lines: list[str] = []
-    conflict = "unresolved conflict" in text.lower()
-    for doc_id, locator, body in _blocks(text):
+    """Restate the resolved facts in natural words (no bracketed ids, no settled-by)."""
+    current: list[tuple[str, str, str]] = []
+    upcoming: list[tuple[str, str, str]] = []
+    conflicts: list[tuple[str, str, str]] = []
+    extras: list[str] = []
+    for _doc_id, locator, body in _blocks(text):
+        name = ""
+        date = ""
+        in_force = ""
+        upcoming_value = ""
+        conflict_value = ""
         for raw in body.splitlines():
             raw = raw.strip()
-            if raw.startswith("In force"):
-                lines.append(f"{raw} (source {doc_id}, {locator}).")
+            if raw.startswith("Source name:"):
+                name = raw.split(":", 1)[1].strip()
+            elif raw.startswith("Effective date:"):
+                date = raw.split(":", 1)[1].strip()
+            elif raw.startswith("In force"):
+                in_force = raw.split(":", 1)[1].strip()
             elif raw.startswith("UNRESOLVED") or raw.lower().startswith("unresolved"):
-                lines.append(f"The documents conflict. {doc_id}, {locator}: {raw}")
+                conflict_value = raw.split(":", 1)[-1].strip()
             elif raw.startswith("UPCOMING"):
-                lines.append(f"{raw} (source {doc_id}, {locator}). This is not in force yet.")
+                upcoming_value = raw.split(":", 1)[-1].strip()
             elif raw.startswith("Calculation") or raw[:1].isdigit():
-                lines.append(raw)
+                extras.append(raw)
             elif raw.startswith("PUBLIC holidays") or raw.startswith("OPTIONAL"):
-                lines.append(raw)
+                extras.append(raw)
             elif re.match(r"\d{4}-\d{2}-\d{2} ", raw):
-                lines.append(raw)
-    if conflict and "conflict" not in " ".join(lines).lower():
-        lines.append("The documents conflict.")
+                extras.append(raw)
+        name = name or locator or "the source document"
+        if conflict_value:
+            conflicts.append((conflict_value, name, date))
+        elif in_force:
+            current.append((in_force, name, date))
+        if upcoming_value:
+            upcoming.append((upcoming_value, name, date))
+
+    lines: list[str] = []
+    if conflicts:
+        parts = "; ".join(
+            f"{name} ({date}) says {value}" if date else f"{name} says {value}"
+            for value, name, date in conflicts
+        )
+        lines.append(f"The documents conflict and I cannot tell which applies. {parts}.")
+    if current:
+        values = "; ".join(dict.fromkeys(v for v, _, _ in current))
+        name, date = current[0][1], current[0][2]
+        if date:
+            lines.append(f"The current rule is {values}, from {name}, effective {date}.")
+        else:
+            lines.append(f"The current rule is {values}, from {name}.")
+    if upcoming:
+        values = "; ".join(dict.fromkeys(v for v, _, _ in upcoming))
+        name, date = upcoming[0][1], upcoming[0][2]
+        current_values = "; ".join(dict.fromkeys(v for v, _, _ in current))
+        if current_values:
+            lines.append(
+                f"From {date} this changes from {current_values} to {values}, from {name}. "
+                "This is not in force yet."
+            )
+        else:
+            lines.append(f"From {date} this changes to {values}, from {name}. This is not in force yet.")
+    lines.extend(extras)
     return "\n".join(lines) or "The documents do not cover this. Please contact HR."
 
 

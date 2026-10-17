@@ -11,15 +11,24 @@ import numpy as np
 import pytest
 
 import app.ingestion.index as index_module
+from app.ingestion.chunker import chunk_document
 from app.ingestion.corpus import load_corpus
 from app.ingestion.embeddings import EmbeddingModelUnavailable, FastEmbedEmbedder
 from app.ingestion.index import HybridIndex, SearchFilters
 from app.ingestion.manifest import load_manifest
+from app.ingestion.parsers import parse_document
 from app.llm.budget import CorpusContext
 from app.llm.fake_provider import FakeProvider
 from app.llm.guard import call_with_corpus
 from app.retrieval.policy_resolver import DocMeta, Requester, is_eligible, readable_access_levels
-from app.retrieval.pipeline import Retrieval, RetrievedChunk, retrieve_for_question, select_diverse
+from app.retrieval.pipeline import (
+    ACCRUAL_SCHEDULE_HINT,
+    Retrieval,
+    RetrievedChunk,
+    expand_retrieval_query,
+    retrieve_for_question,
+    select_diverse,
+)
 from tests.fake_embedder import FakeEmbedder
 from tests.test_corpus_loading import write_corpus
 from tests.test_index import chunk
@@ -475,6 +484,57 @@ def _find_memo_and_policy():
     memo = [e for e in entries if e.doc_type == "memo" and {"IN", "US"} <= set(e.regions)]
     policy = [e for e in entries if e.doc_type == "policy" and "remote" in e.title.lower() and e.regions == ("GLOBAL",)]
     return (memo[0] if memo else None), (policy[0] if policy else None)
+
+
+def test_how_many_days_of_annual_leave_expands_to_the_accrual_schedule_hint():
+    question = "How many days of annual leave do employees in my region get?"
+    expanded = expand_retrieval_query(question)
+    assert ACCRUAL_SCHEDULE_HINT in expanded
+    assert expanded.startswith(question)
+    assert expand_retrieval_query("What is the work-from-home policy?") == "What is the work-from-home policy?"
+
+
+def _accrual_schedule_chunks():
+    """Real parsed chunks of the Annual Leave Accrual Schedule, if the pack is present."""
+    roots = (
+        DATA,
+        Path(__file__).resolve().parent.parent / "veltrix_assessment",
+    )
+    for root in roots:
+        manifest_path = root / "manifest.json"
+        corpus_dir = root / "corpus"
+        if not manifest_path.is_file() or not corpus_dir.is_dir():
+            continue
+        entries = load_manifest(manifest_path)
+        entry = next((e for e in entries if "accrual schedule" in e.title.lower()), None)
+        if entry is None:
+            continue
+        path = corpus_dir / entry.file
+        if not path.is_file():
+            continue
+        parsed = parse_document(path)
+        if not parsed.ok:
+            continue
+        chunks = chunk_document(entry, parsed)
+        if chunks:
+            return entry, chunks
+    return None, ()
+
+
+def test_how_many_days_of_annual_leave_retrieves_the_accrual_schedule():
+    entry, schedule = _accrual_schedule_chunks()
+    if entry is None:
+        pytest.skip("annual leave accrual schedule is not in the local corpus pack")
+    mixed = list(schedule) + list(CHUNKS)
+    idx = HybridIndex.build(mixed, FakeEmbedder())
+    result = retrieve_for_question(
+        "How many days of annual leave do employees in my region get?",
+        EMPLOYEE_IN,
+        date(2026, 10, 15),
+        8,
+        index=idx,
+    )
+    assert entry.doc_id in docs(result.current)
 
 
 @needs_data

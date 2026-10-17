@@ -7,13 +7,22 @@ import pytest
 
 from app.llm.schema import InvalidModelOutput
 from app.orchestrator.evidence import (
+    DROP_NOT_KEPT,
+    DROP_VALUE,
     MAX_UPCOMING_CHUNKS,
     build_claims,
+    build_claims_report,
+    corpus_of,
+    fold_topic,
     follows_facts,
+    group_chunks_by_document,
+    normalise_support_text,
     parse_extraction,
     prompt_chunks,
     render_answer,
     resolve_facts,
+    skipped_numeric_documents,
+    _supported,
 )
 from app.retrieval.pipeline import Retrieval, RetrievedChunk
 from app.retrieval.policy_resolver import Requester
@@ -113,15 +122,15 @@ def test_worked_example_facts_match_readme_b4():
     topic = india.topics[0]
     assert topic.status == "decided" and topic.claims[0].value == "3 days"
     assert topic.claims[0].doc_id == "POL-V2"
-    assert topic.upcoming is not None
-    assert topic.upcoming.doc_id == "POL-V3" and topic.upcoming.value == "4 days"
-    assert topic.upcoming.effective_date == date(2027, 1, 1)
+    assert topic.upcoming
+    assert topic.upcoming[0].doc_id == "POL-V3" and topic.upcoming[0].value == "4 days"
+    assert topic.upcoming[0].effective_date == date(2027, 1, 1)
 
     germany = resolve_facts(claims, shown, EMPLOYEE_DE, TODAY)
     topic = germany.topics[0]
     assert topic.status == "decided" and topic.claims[0].value == "5 days"
     assert topic.claims[0].doc_id == "ADD-DE"
-    assert topic.upcoming is None
+    assert topic.upcoming == ()
 
     past = resolve_facts(claims, shown, EMPLOYEE_IN, date(2025, 8, 1))
     topic = past.topics[0]
@@ -152,3 +161,191 @@ def test_parse_extraction_rejects_invalid_json():
         parse_extraction("not json")
     parsed = parse_extraction('{"claims": [], "not_covered": ["x"]}')
     assert parsed.claims == () and parsed.not_covered == ("x",)
+
+
+def test_support_check_accepts_days_per_month_variants_and_numbers_alone():
+    chunk = "Row: Tenure Under 2 years | Accrual 1.5 days/month"
+    assert "day per month" in normalise_support_text(chunk)
+    assert _supported("1.5 days per month for under 2 years", chunk)
+    assert _supported("1.5 DAYS/MONTH", chunk)
+    assert _supported("1.5 days per month for under 2 years", "accrual is 1.5 for under two years")
+    assert not _supported("99 days per month", chunk)
+
+
+def test_dropped_claims_report_kept_set_and_value_reasons():
+    chunks = by_id("POL-V2")
+    sent = {(c.doc_id, c.locator) for c in chunks}
+    raw = [
+        {"topic": "leave days", "value": "3 days", "doc_id": "POL-V2", "locator": chunks[0].locator},
+        {"topic": "leave days", "value": "3 days", "doc_id": "INVENTED", "locator": chunks[0].locator},
+        {"topic": "leave days", "value": "99 days", "doc_id": "POL-V2", "locator": chunks[0].locator},
+    ]
+    claims, shown, dropped, names, extracted, model_kept = build_claims_report(raw, chunks, sent)
+    assert len(claims) == 1 and shown[claims[0]] == "3 days"
+    assert extracted == 3 and model_kept == 1 and extracted >= model_kept
+    assert dropped.count(DROP_NOT_KEPT) == 1
+    assert dropped.count(DROP_VALUE) == 1
+    assert names[claims[0]]
+
+
+def test_banded_values_from_one_document_are_decided():
+    text = (
+        "Annual Leave Accrual Schedule\n"
+        "Row: Tenure under 2 years | Accrual 1.5 days/month\n"
+        "Row: Tenure 2 to 5 years | Accrual 1.75 days/month"
+    )
+    chunk = RetrievedChunk(
+        "TBL-1", "TBL-LEAVE", "policy", ("GLOBAL",), date(2025, 1, 1),
+        "Annual Leave Accrual Schedule", text, 40, 1.0, "all",
+    )
+    sent = {(chunk.doc_id, chunk.locator)}
+    raw = [
+        {
+            "topic": "annual leave accrual",
+            "value": "1.5 days per month for under 2 years",
+            "doc_id": "TBL-LEAVE",
+            "locator": chunk.locator,
+        },
+        {
+            "topic": "annual leave accrual",
+            "value": "1.75 days per month for 2 to 5 years",
+            "doc_id": "TBL-LEAVE",
+            "locator": chunk.locator,
+        },
+    ]
+    claims, shown = build_claims(raw, [chunk], sent)
+    facts = resolve_facts(claims, shown, EMPLOYEE_IN, TODAY, names={c: "Annual Leave Accrual Schedule" for c in claims})
+    topic = facts.topics[0]
+    assert topic.status == "decided"
+    assert {r.value for r in topic.claims} == {
+        "1.5 days per month for under 2 years",
+        "1.75 days per month for 2 to 5 years",
+    }
+    answer = render_answer(facts)
+    assert "settled by" not in answer.lower()
+    assert "TBL-LEAVE" not in answer
+    assert "[" not in answer
+    assert "Annual Leave Accrual Schedule" in answer
+    assert "1.5" in answer and "1.75" in answer
+    assert follows_facts(answer, facts)
+    assert not follows_facts("Annual leave is 1.5 days per month only.", facts)
+
+
+def test_render_answer_states_current_next_to_upcoming_without_bracketed_ids():
+    chunks = by_id("POL-V2", "POL-V3")
+    sent = {(c.doc_id, c.locator) for c in chunks}
+    raw = [
+        {"topic": "leave days", "value": "3 days", "doc_id": "POL-V2", "locator": "Leave policy v2"},
+        {"topic": "leave days", "value": "4 days", "doc_id": "POL-V3", "locator": "Leave policy v3"},
+    ]
+    claims, shown = build_claims(raw, chunks, sent)
+    names = {c: ("Leave policy v2" if c.doc.doc_id == "POL-V2" else "Leave policy v3") for c in claims}
+    facts = resolve_facts(claims, shown, EMPLOYEE_IN, TODAY, names=names)
+    answer = render_answer(facts)
+    assert "3 days" in answer and "4 days" in answer
+    assert "2027-01-01" in answer
+    assert "not in force yet" in answer.lower()
+    assert "settled by" not in answer.lower()
+    assert "[POL-V2" not in answer and "[POL-V3" not in answer
+    assert "Leave policy v2" in answer
+    assert follows_facts(answer, facts)
+    assert not follows_facts("Settled by regional scope: 3 days [POL-V2 | x].", facts)
+
+
+def test_band_specific_topics_fold_into_one_rule():
+    assert fold_topic("annual leave accrual, 2 to less than 5 years of service") == "annual leave accrual"
+    assert fold_topic("Annual leave entitlement") == "annual leave accrual"
+    assert fold_topic("leave days") == "leave days"
+
+
+TBL_RATES = (
+    "Annual Leave Accrual Schedule\n\n"
+    "Row: Length of service Less than 2 years | Days earned per month 1.5 | Days earned per full year 18\n"
+    "Row: Length of service 2 years to less than 5 years | Days earned per month 1.75 | Days earned per full year 21\n"
+    "Row: Length of service 5 years or more | Days earned per month 2.0 | Days earned per full year 24\n"
+)
+V3_CHANGES = (
+    "1. What changes\n\n"
+    "Row: Topic Annual leave accrual, less than 2 years of service | Version 2 1.5 days per month | "
+    "Version 3 (from 1 January 2027) 1.5 days per month (no change)\n"
+    "Row: Topic Annual leave accrual, 2 to less than 5 years of service | Version 2 1.75 days per month | "
+    "Version 3 (from 1 January 2027) 2.0 days per month\n"
+    "Row: Topic Annual leave accrual, 5 or more years of service | Version 2 2.0 days per month | "
+    "Version 3 (from 1 January 2027) 2.25 days per month\n"
+)
+
+
+def test_table_rows_answer_when_the_model_extracts_nothing_or_splits_bands():
+    current = RetrievedChunk(
+        "TBL-1", "TBL-LEAVE-ACCRUAL", "policy", ("GLOBAL",), date(2025, 1, 1),
+        "1. Accrual rates", TBL_RATES, 80, 1.0, "all",
+    )
+    title = RetrievedChunk(
+        "TBL-0", "TBL-LEAVE-ACCRUAL", "policy", ("GLOBAL",), date(2025, 1, 1),
+        "Annual Leave Accrual Schedule", "Annual Leave Accrual Schedule\n", 10, 0.5, "all",
+    )
+    upcoming = RetrievedChunk(
+        "V3-1", "POL-LEAVE-GLOBAL-V3", "policy", ("GLOBAL",), date(2027, 1, 1),
+        "1. What changes", V3_CHANGES, 80, 1.0, "all",
+    )
+    chunks = [title, current, upcoming]
+    sent = {(c.doc_id, c.locator) for c in chunks}
+    raw = [
+        {
+            "topic": "annual leave accrual, less than 2 years of service",
+            "value": "1.5 days per month",
+            "doc_id": "POL-LEAVE-GLOBAL-V3",
+            "locator": "1. What changes",
+        }
+    ]
+    claims, shown, _dropped, names, extracted, model_kept = build_claims_report(raw, chunks, sent)
+    assert extracted >= model_kept
+    facts = resolve_facts(
+        claims, shown, EMPLOYEE_IN, date(2026, 10, 15),
+        not_covered=["my region", "annual leave accrual 2 to less than 5 years of service"],
+        names=names,
+    )
+    assert facts.has_answer
+    topic = facts.topics[0]
+    assert topic.status == "decided"
+    current_vals = {r.value for r in topic.claims}
+    assert any("1.5" in v and "Less than 2 years" in v for v in current_vals)
+    assert any("1.75" in v for v in current_vals)
+    assert any("2.0" in v and "5 years or more" in v for v in current_vals)
+    assert {r.doc_id for r in topic.claims} == {"TBL-LEAVE-ACCRUAL"}
+    upcoming_vals = {r.value for r in topic.upcoming}
+    assert any("2.0" in v and "2 to less than 5" in v for v in upcoming_vals)
+    assert any("2.25" in v for v in upcoming_vals)
+    assert not any("1.75" in v for v in upcoming_vals)  # Version 2 column is not the V3 rate
+    assert facts.not_covered == ()
+    answer = render_answer(facts)
+    assert "1.5" in answer and "1.75" in answer and "2.25" in answer
+    assert "2027-01-01" in answer
+    assert "Annual Leave Accrual Schedule" in answer
+    assert "settled by" not in answer.lower()
+    assert "[POL-LEAVE" not in answer
+    assert follows_facts(answer, facts)
+
+
+def test_chunks_are_grouped_by_document_in_the_extract_corpus():
+    chunks = by_id("POL-V2", "POL-V3", "POL-V1")
+    grouped = group_chunks_by_document(chunks)
+    assert {g[0].doc_id for g in grouped} == {c.doc_id for c in chunks}
+    parts = corpus_of(chunks).parts
+    headers = [p for p in parts if p.locator == "document"]
+    assert {p.doc_id for p in headers} == {c.doc_id for c in chunks}
+    assert all("effective" in p.text and p.doc_id in p.text for p in headers)
+
+
+def test_skipped_numeric_documents_are_those_with_numbers_and_question_terms():
+    chunks = by_id("POL-V2", "POL-REMOTE")
+    sent = {(c.doc_id, c.locator) for c in chunks}
+    skipped = skipped_numeric_documents(
+        "How many days of annual leave do employees get?", chunks, sent, claimed_doc_ids=()
+    )
+    assert "POL-V2" in {c.doc_id for c in skipped}
+    assert "POL-REMOTE" not in {c.doc_id for c in skipped}
+    none = skipped_numeric_documents(
+        "How many days of annual leave do employees get?", chunks, sent, claimed_doc_ids=["POL-V2"]
+    )
+    assert "POL-V2" not in {c.doc_id for c in none}

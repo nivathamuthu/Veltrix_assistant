@@ -23,6 +23,7 @@ only; this module never interprets it.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -32,6 +33,20 @@ from app.ingestion.index import HybridIndex, SearchFilters, SearchResult
 from app.retrieval.policy_resolver import DocMeta, Requester, readable_access_levels
 
 POOL_FACTOR = 3  # the search is asked for k * POOL_FACTOR chunks, then reduced to k
+# Extra search terms so a "how many days of annual leave" question also hits the
+# accrual-schedule document (a table of monthly rates). No policy numbers here.
+_ANNUAL_LEAVE_DAYS = re.compile(r"(?i)\bhow many days of annual leave\b")
+ACCRUAL_SCHEDULE_HINT = "annual leave accrual schedule monthly entitlement length of service"
+
+
+def expand_retrieval_query(query: str) -> str:
+    """Add the accrual-schedule hint when the question is a leave-day count."""
+    text = query.strip()
+    if not text:
+        return text
+    if _ANNUAL_LEAVE_DAYS.search(text):
+        return f"{text} {ACCRUAL_SCHEDULE_HINT}"
+    return text
 
 
 @dataclass(frozen=True)
@@ -139,6 +154,7 @@ def retrieve_for_question(
     region = requester.region.strip().upper()
     if not isinstance(query, str) or not query.strip():
         return Retrieval()
+    query = expand_retrieval_query(query)
 
     levels = readable_access_levels(requester.role) if isinstance(requester.role, str) else frozenset()
     if not levels:

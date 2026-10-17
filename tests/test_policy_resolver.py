@@ -21,6 +21,7 @@ from app.retrieval.policy_resolver import (
     readable_access_levels,
     resolve_topic,
     upcoming_change,
+    upcoming_changes,
 )
 
 TODAY = date(2026, 9, 15)
@@ -335,6 +336,35 @@ def test_one_document_stating_two_values_conflicts_with_itself():
     d = doc("A", effective=date(2026, 1, 1))
     resolution = resolve_topic([claim(2, d, locator="s1"), claim(3, d, locator="s2")], TODAY, EMPLOYEE_IN)
     assert resolution.status == "conflict" and len(resolution.claims) == 2
+
+
+def test_same_document_tenure_bands_are_decided_not_a_conflict():
+    d = doc("TBL", effective=date(2025, 1, 1))
+    claims = [
+        claim("1.5 days per month for under 2 years", d, locator="r1"),
+        claim("1.75 days per month for 2 to 5 years", d, locator="r2"),
+        claim("2 days per month for 5 years or more", d, locator="r3"),
+    ]
+    resolution = resolve_topic(claims, TODAY, EMPLOYEE_IN)
+    assert resolution.status == "decided"
+    assert len(resolution.claims) == 3
+
+
+def test_upcoming_changes_returns_every_band_from_the_future_document():
+    current = doc("NOW", effective=date(2025, 1, 1))
+    future = doc("NEXT", effective=date(2027, 1, 1))
+    claims = [
+        claim("1.5 days per month for under 2 years", current, locator="r1"),
+        claim("1.75 days per month for 2 to 5 years", current, locator="r2"),
+        claim("2.0 days per month for under 2 years", future, locator="r1"),
+        claim("2.25 days per month for 2 to 5 years", future, locator="r2"),
+    ]
+    upcoming = upcoming_changes(claims, EMPLOYEE_IN, TODAY)
+    assert {c.value for c in upcoming} == {
+        "2.0 days per month for under 2 years",
+        "2.25 days per month for 2 to 5 years",
+    }
+    assert upcoming_change(claims, EMPLOYEE_IN, TODAY) is not None
 
 
 def test_a_single_eligible_claim_wins_and_says_so():

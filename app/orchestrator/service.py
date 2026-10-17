@@ -26,6 +26,7 @@ from datetime import date
 from typing import Any, Callable, Final
 
 from app.db import Database, Employee, readable_doc_ids
+from app.llm.client import begin_message
 from app.llm.providers.base import LLMUnavailable
 from app.llm.schema import InvalidModelOutput
 from app.orchestrator.analyzer import (
@@ -133,6 +134,7 @@ class ChatService:
     ) -> ChatResult:
         """``request_id`` only labels the log lines of this request's LLM calls."""
         request_id = request_id or str(uuid.uuid4())
+        begin_message()
         today = self._today()
         pending = get_pending(session_id, db=self.db)
 

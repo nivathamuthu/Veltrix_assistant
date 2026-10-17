@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from app.llm.client import LLMClient
+from app.llm.client import LLMClient, begin_message
 from app.llm.providers.base import LLMUnavailable
 from app.orchestrator.analyzer import SessionContext, Understanding
 from app.orchestrator.llm_analyzer import LLMAnalyzer, build_user_message, understanding_from
@@ -37,6 +37,7 @@ def test_invalid_json_is_raised_and_is_not_turned_into_an_intent():
     from app.llm.schema import InvalidModelOutput
 
     for reply in ("not json", "[]", '{"intent":"hack"}', "", "```json\nnope\n```"):
+        begin_message()
         with pytest.raises(InvalidModelOutput):
             run(MockProvider(reply))
 
