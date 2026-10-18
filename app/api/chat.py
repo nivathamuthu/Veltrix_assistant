@@ -175,6 +175,24 @@ def _log(request_id: str, employee_id: str, result: ChatResult) -> None:
 
 
 def register_chat(app: FastAPI, *, settings: Settings, state: IngestionState, db: Database, service: ChatService) -> None:
+    @app.get("/me")
+    async def me(request: Request) -> Any:
+        """Directory fields that are not personal data: id, role, region, level, join date."""
+        employee_id = (request.headers.get("X-Employee-Id") or "").strip()
+        if not employee_id:
+            return _error(401, DETAIL_UNAUTHORIZED)
+        with db.read() as conn:
+            employee = get_employee(conn, employee_id)
+        if employee is None:
+            return _error(401, DETAIL_UNAUTHORIZED)
+        return {
+            "employee_id": employee.employee_id,
+            "role": employee.role,
+            "region": employee.region,
+            "level": employee.level,
+            "join_date": employee.join_date,
+        }
+
     @app.post("/chat", response_model=ChatResponse, openapi_extra=_REQUEST_BODY_DOC)
     async def chat(request: Request) -> Any:
         started = time.monotonic()

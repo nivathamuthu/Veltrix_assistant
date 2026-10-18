@@ -37,16 +37,55 @@ POOL_FACTOR = 3  # the search is asked for k * POOL_FACTOR chunks, then reduced 
 # accrual-schedule document (a table of monthly rates). No policy numbers here.
 _ANNUAL_LEAVE_DAYS = re.compile(r"(?i)\bhow many days of annual leave\b")
 ACCRUAL_SCHEDULE_HINT = "annual leave accrual schedule monthly entitlement length of service"
+# Office names for the requester's DB region only — they help BM25 find that
+# region's addendum, calendar and benefits files. Not corpus policy values.
+REGION_SEARCH_TERMS: dict[str, str] = {
+    "IN": "India Bengaluru",
+    "US": "United States Austin",
+    "DE": "Germany Berlin",
+}
 
 
-def expand_retrieval_query(query: str) -> str:
-    """Add the accrual-schedule hint when the question is a leave-day count."""
+def expand_retrieval_query(query: str, region: str | None = None) -> str:
+    """Add topic and region terms so PDF/MD addenda, calendars and summaries rank.
+
+    ``region`` is the requester's directory region, never a claim from the message.
+    Nothing here is a leave day count, holiday date or other corpus fact.
+    """
     text = query.strip()
     if not text:
         return text
-    if _ANNUAL_LEAVE_DAYS.search(text):
-        return f"{text} {ACCRUAL_SCHEDULE_HINT}"
-    return text
+    low = text.casefold()
+    extras: list[str] = []
+    if _ANNUAL_LEAVE_DAYS.search(text) or ("annual leave" in low and "how many" in low):
+        extras.append(ACCRUAL_SCHEDULE_HINT)
+        extras.append("regional leave addendum")
+    if any(w in low for w in ("carry", "carried", "carry over")):
+        extras.append("carry forward unused annual leave addendum")
+    if "sick" in low:
+        extras.append("sick leave working days")
+    if "holiday" in low:
+        extras.append("holiday calendar public holidays")
+    if any(w in low for w in ("benefit", "insurance", "401", "provident", "gratuity")):
+        extras.append("benefits summary")
+    if any(w in low for w in ("travel", "expense", "hotel", "per diem", "flight")):
+        extras.append("travel and expense policy hotel daily allowance")
+    if any(w in low for w in ("notice", "probation")):
+        extras.append("probation notice period")
+    if any(w in low for w in ("learn", "training", "course", "certification")):
+        extras.append("learning and development budget")
+    if any(w in low for w in ("work from home", "work-from-home", "remote", "wfh")):
+        extras.append("remote hybrid work from home")
+    if any(w in low for w in ("password", "security", "vpn")):
+        extras.append("IT security policy")
+    if any(w in low for w in ("working time", "overtime", "working hours")):
+        extras.append("working time hours rest")
+    office = REGION_SEARCH_TERMS.get((region or "").strip().upper())
+    if office:
+        extras.append(office)
+    if not extras:
+        return text
+    return f"{text} {' '.join(extras)}"
 
 
 @dataclass(frozen=True)
@@ -80,11 +119,33 @@ class _Ranked(Protocol):
 T = TypeVar("T", bound=_Ranked)
 
 
+_META_TABLE_ROW = re.compile(
+    r"(?i)^row:\s*(document id|version|effective date|applies to|owner|classification)\b"
+)
+
+
+def _has_ingested_table(item: object) -> bool:
+    """True when the chunk has a data table, not only the document-metadata box."""
+    text = getattr(item, "text", "") or ""
+    for line in text.splitlines():
+        if line.casefold().startswith("row:") and not _META_TABLE_ROW.match(line.strip()):
+            return True
+    return False
+
+
 def select_diverse(ranked: Sequence[T], k: int) -> list[T]:
     """Pick at most ``k`` of ``ranked`` (best first): each document's best chunk first
-    (best documents first), then the remaining slots by rank. Returned in rank order."""
+    (best documents first), then the remaining slots by rank. Returned in rank order.
+
+    If a document has a table-row chunk in the pool, that chunk is preferred over a
+    title-only hit so rate schedules and calendars are not dropped.
+    """
     if k <= 0:
         return []
+    table_pos: dict[str, int] = {}
+    for position, item in enumerate(ranked):
+        if item.doc_id not in table_pos and _has_ingested_table(item):
+            table_pos[item.doc_id] = position
     chosen: set[int] = set()
     seen_docs: set[str] = set()
     for position, item in enumerate(ranked):
@@ -92,7 +153,7 @@ def select_diverse(ranked: Sequence[T], k: int) -> list[T]:
             break
         if item.doc_id not in seen_docs:
             seen_docs.add(item.doc_id)
-            chosen.add(position)
+            chosen.add(table_pos.get(item.doc_id, position))
     for position in range(len(ranked)):
         if len(chosen) == k:
             break
@@ -154,7 +215,7 @@ def retrieve_for_question(
     region = requester.region.strip().upper()
     if not isinstance(query, str) or not query.strip():
         return Retrieval()
-    query = expand_retrieval_query(query)
+    query = expand_retrieval_query(query, region=region)
 
     levels = readable_access_levels(requester.role) if isinstance(requester.role, str) else frozenset()
     if not levels:

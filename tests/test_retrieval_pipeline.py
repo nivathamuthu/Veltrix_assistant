@@ -23,6 +23,7 @@ from app.llm.guard import call_with_corpus
 from app.retrieval.policy_resolver import DocMeta, Requester, is_eligible, readable_access_levels
 from app.retrieval.pipeline import (
     ACCRUAL_SCHEDULE_HINT,
+    REGION_SEARCH_TERMS,
     Retrieval,
     RetrievedChunk,
     expand_retrieval_query,
@@ -399,6 +400,24 @@ def test_select_diverse_with_fewer_slots_than_documents_keeps_the_best_documents
     assert [r.doc_id for r in select_diverse(results, 3)] == ["D0", "D1", "D2"]
 
 
+def test_select_diverse_prefers_a_table_row_chunk_over_a_title_hit():
+    title = SimpleNamespace(doc_id="TBL", chunk_id="title", text="Annual Leave Accrual Schedule", score=1.0)
+    meta = SimpleNamespace(
+        doc_id="TBL", chunk_id="meta",
+        text="Row: Document ID | TBL-LEAVE-ACCRUAL\nRow: Version | 1.0",
+        score=0.9,
+    )
+    table = SimpleNamespace(
+        doc_id="TBL", chunk_id="rates",
+        text="Row: Length of service Less than 2 years | Days earned per month 1.5",
+        score=0.5,
+    )
+    picked_meta = select_diverse([title, meta], 1)
+    assert [r.chunk_id for r in picked_meta] == ["title"]
+    picked = select_diverse([title, meta, table], 1)
+    assert [r.chunk_id for r in picked] == ["rates"]
+
+
 def test_select_diverse_never_exceeds_k_or_repeats_and_handles_small_inputs():
     results = ranked(("A", "A1"), ("B", "B1"))
     assert select_diverse(results, 10) == results
@@ -491,7 +510,18 @@ def test_how_many_days_of_annual_leave_expands_to_the_accrual_schedule_hint():
     expanded = expand_retrieval_query(question)
     assert ACCRUAL_SCHEDULE_HINT in expanded
     assert expanded.startswith(question)
-    assert expand_retrieval_query("What is the work-from-home policy?") == "What is the work-from-home policy?"
+    india = expand_retrieval_query(question, region="IN")
+    assert REGION_SEARCH_TERMS["IN"] in india
+    assert "addendum" in india
+    germany = expand_retrieval_query(question, region="DE")
+    assert REGION_SEARCH_TERMS["DE"] in germany
+    remote = expand_retrieval_query("What is the work-from-home policy?", region="US")
+    assert remote.startswith("What is the work-from-home policy?")
+    assert "remote" in remote.lower()
+    assert REGION_SEARCH_TERMS["US"] in remote
+    carry = expand_retrieval_query("How many days can I carry forward?", region="IN")
+    assert "carry forward" in carry
+    assert REGION_SEARCH_TERMS["IN"] in carry
 
 
 def _accrual_schedule_chunks():

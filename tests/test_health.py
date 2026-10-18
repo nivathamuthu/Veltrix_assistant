@@ -17,6 +17,26 @@ def _wait_for(client: TestClient, status: int, timeout: float = 10.0) -> None:
     raise AssertionError(f"/health never returned {status}")
 
 
+def test_root_serves_the_chat_ui(settings, fake_embedder):
+    app = create_app(settings, embedder=fake_embedder)
+    with TestClient(app) as client:
+        response = client.get("/")
+        assert response.status_code == 200
+        assert "text/html" in response.headers["content-type"]
+        assert "PeopleOps" in response.text
+        assert 'id="employee"' in response.text
+        assert 'id="session"' in response.text
+        assert "New chat" in response.text
+        assert 'id="scope"' in response.text
+        assert "/me" in response.text
+        assert "E4004" in response.text
+        assert "direct reports" in response.text
+        assert "cannot approve" in response.text
+        assert "Who in my team is on leave next week?" in response.text
+        assert "source-id" in response.text
+        assert "Section: " in response.text
+
+
 def test_health_is_503_until_ingestion_finishes_then_200(settings, monkeypatch, fake_embedder):
     monkeypatch.setenv("INGEST_STARTUP_DELAY_SECONDS", "1.0")
     app = create_app(load_settings(env_file=None), embedder=fake_embedder)

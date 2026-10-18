@@ -10,9 +10,13 @@ from app.orchestrator.evidence import (
     DROP_NOT_KEPT,
     DROP_VALUE,
     MAX_UPCOMING_CHUNKS,
+    ClaimRef,
+    Facts,
+    TopicFact,
     build_claims,
     build_claims_report,
     corpus_of,
+    facts_for_question,
     fold_topic,
     follows_facts,
     group_chunks_by_document,
@@ -255,7 +259,62 @@ def test_render_answer_states_current_next_to_upcoming_without_bracketed_ids():
 def test_band_specific_topics_fold_into_one_rule():
     assert fold_topic("annual leave accrual, 2 to less than 5 years of service") == "annual leave accrual"
     assert fold_topic("Annual leave entitlement") == "annual leave accrual"
-    assert fold_topic("leave days") == "leave days"
+    assert fold_topic("leave days") == "annual leave accrual"
+    assert fold_topic("paid annual leave") == "annual leave accrual"
+    assert fold_topic("annual leave carry forward") == "annual leave carry forward"
+    assert fold_topic("annual leave encashment") == "annual leave encashment"
+
+
+def test_a_carry_forward_excerpt_is_not_treated_as_the_accrual_rule():
+    from app.orchestrator.evidence import _topic_for_chunk
+
+    carry = "Employees may carry forward up to 15 days of unused annual leave."
+    assert _topic_for_chunk("annual leave accrual", carry, "15 days") == "annual leave carry forward"
+    mixed = (
+        "Annual leave is earned monthly; see the Accrual Schedule. "
+        "Up to 10 days can be carried forward; use them by 31 March."
+    )
+    assert _topic_for_chunk("annual leave accrual", mixed, "10 days") == "annual leave carry forward"
+    payout = "On leaving the company, employees are paid for up to 30 days of unused annual leave."
+    assert _topic_for_chunk("annual leave accrual", payout, "30 days") == "annual leave encashment"
+    rates = "Length of service Less than 2 years. Days earned per month 1.5."
+    assert _topic_for_chunk("annual leave accrual", rates, "1.5 days per month") == "annual leave accrual"
+
+
+def test_encashment_is_dropped_from_an_entitlement_question():
+    accrual = TopicFact(
+        topic="annual leave accrual",
+        status="decided",
+        claims=(
+            ClaimRef(
+                "TBL-LEAVE-ACCRUAL",
+                "1. Accrual rates",
+                date(2025, 1, 1),
+                "policy",
+                "1.5 days per month",
+                "Annual Leave Accrual Schedule",
+            ),
+        ),
+    )
+    payout = TopicFact(
+        topic="annual leave encashment",
+        status="decided",
+        claims=(
+            ClaimRef(
+                "ADD-LEAVE-IN",
+                "4. Leave encashment",
+                date(2025, 1, 1),
+                "addendum",
+                "30 days",
+                "Leave Policy Addendum: India",
+            ),
+        ),
+    )
+    facts = Facts(TODAY, (accrual, payout))
+    kept = facts_for_question(facts, "How many days of annual leave do employees in my region get?")
+    assert [t.topic for t in kept.topics] == ["annual leave accrual"]
+    carry = facts_for_question(facts, "How many days of unused annual leave can I carry forward?")
+    assert carry.topics == facts.topics  # no carry topic, so nothing is dropped
 
 
 TBL_RATES = (

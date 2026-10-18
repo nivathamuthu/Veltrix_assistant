@@ -23,8 +23,28 @@ _RATE = re.compile(
     re.IGNORECASE,
 )
 _BAND_AFTER = re.compile(r"(?:for|if|when)\s+([^.\n;|]+)", re.IGNORECASE)
-_WEEK = re.compile(r"(two|three|four|five|\d+)\s+days?\s+each\s+week", re.IGNORECASE)
+_WEEK = re.compile(
+    r"(two|three|four|five|\d+)\s+days?\s+(?:each|per|a)\s+week", re.IGNORECASE
+)
 _NOTICE = re.compile(r"(\d+)\s+weeks?", re.IGNORECASE)
+_CARRY = re.compile(
+    r"carr(?:y|ied)(?:\s+forward|\s+over)\s+(?:up\s+to\s+)?(\d+(?:\.\d+)?)\s+days|"
+    r"up\s+to\s+(\d+(?:\.\d+)?)\s+days\s+can\s+be\s+carr(?:y|ied)(?:\s+forward|\s+over)",
+    re.IGNORECASE,
+)
+_SICK = re.compile(
+    r"(\d+(?:\.\d+)?)\s+(?:working\s+)?days?\s+of\s+paid\s+sick|"
+    r"(\d+(?:\.\d+)?)\s+paid\s+sick\s+days|"
+    r"sick leave[^\n.]{0,40}?(\d+(?:\.\d+)?)\s+(?:working\s+)?days",
+    re.IGNORECASE,
+)
+_ANNUAL_FLAT = re.compile(
+    r"(\d+(?:\.\d+)?)\s+working days of paid annual leave|"
+    r"annual leave entitlement is (\d+(?:\.\d+)?)\s+days|"
+    r"receive (\d+(?:\.\d+)?)\s+working days of paid annual leave",
+    re.IGNORECASE,
+)
+_PAYOUT = re.compile(r"encash|paid out|on leaving|leaving the company", re.IGNORECASE)
 _WORD_NUM = {"two": "2", "three": "3", "four": "4", "five": "5"}
 
 
@@ -129,28 +149,44 @@ def extract_from_prompt(text: str) -> str:
     question = _last_tag(text, "question").casefold()
     wants_remote = any(w in question for w in ("work from home", "work-from-home", "remote", "wfh"))
     wants_notice = "notice" in question
+    wants_carry = any(w in question for w in ("carry", "carried forward", "carry over"))
+    wants_sick = "sick" in question and not wants_carry
     wants_accrual = any(w in question for w in ("accrue", "accrual", "balance", "by december", "project"))
-    wants_leave = (not wants_remote) and any(
+    wants_leave = (not wants_remote and not wants_carry and not wants_sick) and any(
         w in question for w in ("leave", "annual", "entitlement", "how many days")
     )
     claims: list[dict] = []
     for doc_id, locator, body in _blocks(text):
         rates = _table_rates(body)
-        table_like = len(rates) > 1 or "row:" in body.lower()
-        if rates and (wants_accrual or (wants_leave and table_like)):
+        if rates and (wants_accrual or wants_leave):
             for value in rates:
                 claims.append(claim("annual leave accrual", value, doc_id, locator))
-        if wants_remote and "each week" in body.lower() and "home" in body.lower():
+        if wants_remote and "week" in body.lower() and "home" in body.lower():
             match = _WEEK.search(body)
             if match:
                 n = _WORD_NUM.get(match.group(1).lower(), match.group(1))
                 claims.append(claim("remote work days", f"{n} days each week", doc_id, locator))
+        elif wants_carry:
+            match = _CARRY.search(body)
+            if match:
+                number = next(g for g in match.groups() if g)
+                claims.append(claim("annual leave carry forward", f"{number} days", doc_id, locator))
+        elif wants_sick:
+            match = _SICK.search(body)
+            if match:
+                number = next(g for g in match.groups() if g)
+                claims.append(claim("sick leave", f"{number} days", doc_id, locator))
         elif wants_notice and "notice" in body.lower() and _NOTICE.search(body):
             claims.append(claim("notice period", f"{_NOTICE.search(body).group(1)} weeks", doc_id, locator))
-        elif wants_leave and "leave" in body.lower():
-            flat = _flat_day_count(body)
-            if flat:
-                claims.append(claim("leave days", flat, doc_id, locator))
+        elif wants_leave and not wants_accrual and "leave" in body.lower():
+            annual = _ANNUAL_FLAT.search(body)
+            if annual:
+                number = next(g for g in annual.groups() if g)
+                claims.append(claim("annual leave accrual", f"{number} days", doc_id, locator))
+            elif not rates and not _CARRY.search(body) and not _PAYOUT.search(body):
+                flat = _flat_day_count(body)
+                if flat:
+                    claims.append(claim("leave days", flat, doc_id, locator))
     return extraction(claims)
 
 

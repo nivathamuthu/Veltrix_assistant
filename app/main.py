@@ -1,11 +1,12 @@
-"""FastAPI app: GET /health and POST /chat."""
+"""FastAPI app: GET /health, GET / chat UI, and POST /chat."""
 from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.api.chat import register_chat
 from app.config import Settings, load_settings
@@ -66,6 +67,10 @@ def create_app(
     app = FastAPI(title="Veltrix PeopleOps Assistant", lifespan=lifespan)
     app.state.settings = settings
     app.state.ingestion = state
+
+    @app.get("/", include_in_schema=False)
+    async def chat_ui() -> FileResponse:
+        return FileResponse(Path(__file__).resolve().parent / "static" / "index.html")
 
     @app.get("/health")
     async def health() -> JSONResponse:

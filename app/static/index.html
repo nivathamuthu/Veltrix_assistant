@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Veltrix PeopleOps</title>
+  <style>
+    :root {
+      --ink: #12202b;
+      --ink-soft: #5b6b76;
+      --paper: #d7e3ea;
+      --panel: #ffffff;
+      --line: #c9d6de;
+      --bot: #0f6e56;
+      --bot-deep: #0b5341;
+      --you: #1c4d7a;
+      --ok: #1a8a5c;
+      --wait: #c48a16;
+      --bad: #b42318;
+      --employee: #1c4d7a;
+      --manager: #9a4a2c;
+      --hr: #5c4d7a;
+      --sans: "Segoe UI", "Helvetica Neue", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: linear-gradient(180deg, #b9cdd8 0%, #d7e3ea 40%, #c8d7df 100%);
+      font-family: var(--sans);
+    }
+    .app {
+      height: 100%;
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      gap: 12px;
+    }
+    .rail, .phone {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      min-height: 0;
+    }
+    .rail {
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      overflow: auto;
+    }
+    .phone {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      overflow: hidden;
+    }
+    .bot-bar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      background: var(--bot);
+      color: #f4fff9;
+    }
+    .avatar, .face {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      flex: none;
+    }
+    .avatar { background: #e7fff5; color: var(--bot-deep); }
+    .face { width: 28px; height: 28px; font-size: 12px; }
+    .face.bot { background: #e7fff5; color: var(--bot-deep); }
+    .face.you { background: #d7e8f6; color: var(--you); }
+    .bot-name { font-size: 16px; font-weight: 650; margin: 0; }
+    .bot-sub { margin: 2px 0 0; font-size: 12px; color: #d7f5ea; }
+    .health { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 12px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--wait); }
+    .dot.ok { background: #7dffb4; }
+    .dot.bad { background: #ffb4b0; }
+    .kicker { font-size: 12px; font-weight: 650; margin: 0 0 8px; }
+    label { display: block; font-size: 12px; color: var(--ink-soft); margin-bottom: 6px; }
+    input, textarea, button { font: inherit; }
+    input, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      padding: 9px 10px;
+    }
+    .who { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip, .ghost, .confirm {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink-soft);
+      padding: 6px 9px;
+      font-size: 12px;
+      cursor: pointer;
+      border-radius: 999px;
+    }
+    .chip.active, .chip:hover, .ghost:hover { border-color: var(--bot); color: var(--bot-deep); }
+    .id-line { font-size: 20px; font-weight: 650; margin: 0 0 6px; }
+    .badges { display: flex; flex-wrap: wrap; gap: 6px; }
+    .badge {
+      font-size: 11px;
+      text-transform: uppercase;
+      border: 1px solid var(--line);
+      padding: 2px 7px;
+      color: var(--ink-soft);
+      border-radius: 999px;
+    }
+    .badge.role-employee { border-color: var(--employee); color: var(--employee); }
+    .badge.role-manager { border-color: var(--manager); color: var(--manager); }
+    .badge.role-hr { border-color: var(--hr); color: var(--hr); }
+    .whoami.bad { color: var(--bad); font-size: 13px; }
+    .scope-box { padding: 10px; border: 1px solid var(--line); }
+    .scope-title { font-size: 15px; margin: 0 0 8px; }
+    .can-list { margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
+    .can-list li { margin: 0 0 4px; }
+    .cannot { color: var(--bad); }
+    .session-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
+    .hint { margin: 6px 0 0; font-size: 12px; color: var(--ink-soft); line-height: 1.35; }
+    #session { font-size: 12px; word-break: break-all; }
+    .thread {
+      overflow: auto;
+      padding: 16px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background:
+        radial-gradient(circle at 12px 12px, #eef6f3 1.2px, transparent 1.4px) 0 0 / 18px 18px,
+        #f3f8f6;
+    }
+    .empty { margin: auto; max-width: 420px; text-align: center; color: var(--ink-soft); }
+    .empty h2 { margin: 10px 0 6px; font-size: 22px; color: var(--ink); }
+    .cards { display: grid; gap: 8px; margin-top: 12px; text-align: left; }
+    .card { padding: 10px 12px; background: #fff; border: 1px solid var(--line); }
+    .card h3 { margin: 0 0 4px; font-size: 13px; }
+    .card p { margin: 0; font-size: 13px; line-height: 1.4; }
+    .row { display: flex; align-items: flex-end; gap: 8px; max-width: min(680px, 94%); }
+    .row.user { align-self: end; flex-direction: row-reverse; }
+    .msg {
+      padding: 10px 12px;
+      border-radius: 16px 16px 16px 4px;
+      background: #fff;
+      border: 1px solid #dbe7e2;
+      box-shadow: 0 1px 0 rgba(15, 110, 86, 0.05);
+    }
+    .row.user .msg {
+      background: var(--you);
+      color: #f4f8fc;
+      border-color: var(--you);
+      border-radius: 16px 16px 4px 16px;
+    }
+    .msg.pending { opacity: 0.7; }
+    .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+    .row.user .badge { border-color: #7ea4c4; color: #d5e6f4; }
+    .answer { white-space: pre-wrap; line-height: 1.45; }
+    .error { color: #ffd2ce; }
+    .row.assistant .error { color: var(--bad); }
+    .sources {
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid #dbe7e2;
+    }
+    .sources-title {
+      margin: 0 0 6px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--bot-deep);
+    }
+    .source-list { display: grid; gap: 6px; }
+    .source {
+      display: grid;
+      gap: 2px;
+      padding: 8px 10px;
+      background: #eef7f3;
+      border: 1px solid #c5e0d4;
+      border-radius: 10px;
+    }
+    .source-id { font-size: 13px; font-weight: 700; color: var(--bot-deep); word-break: break-word; }
+    .source-loc { font-size: 12px; color: var(--ink-soft); word-break: break-word; }
+    .used { margin-top: 8px; font-size: 12px; color: var(--ink-soft); }
+    .dock { padding: 10px 12px 12px; border-top: 1px solid var(--line); background: #fff; }
+    .hint-group { margin-bottom: 8px; }
+    .hints { display: flex; flex-wrap: wrap; gap: 6px; }
+    .composer {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: end;
+      background: #f4f8f6;
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 6px 6px 6px 12px;
+    }
+    textarea {
+      min-height: 44px;
+      max-height: 120px;
+      resize: none;
+      border: 0;
+      background: transparent;
+      padding: 10px 4px;
+    }
+    .send {
+      width: 44px;
+      height: 44px;
+      border: 0;
+      border-radius: 50%;
+      background: var(--bot);
+      color: #fff;
+      cursor: pointer;
+      font-size: 18px;
+    }
+    .send:disabled { opacity: 0.45; cursor: default; }
+    .send:not(:disabled):hover { background: var(--bot-deep); }
+    .confirm { margin-top: 8px; border-color: var(--ok); color: var(--ok); }
+    @media (max-width: 860px) {
+      .app { grid-template-columns: 1fr; padding: 0; }
+      .rail { max-height: 42vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <section>
+        <p class="kicker">Sign in</p>
+        <label for="employee">Employee id</label>
+        <input id="employee" maxlength="32" autocomplete="off" spellcheck="false" placeholder="X-Employee-Id">
+        <div class="whoami" id="whoami" style="margin-top:8px">Role and region load from the directory.</div>
+        <div class="who" id="presets" style="margin-top:8px"></div>
+        <label for="session" style="margin-top:14px">Session</label>
+        <div class="session-row">
+          <input id="session" maxlength="128" autocomplete="off" spellcheck="false" placeholder="This chat’s session id">
+          <button class="ghost" id="new-session" type="button">New chat</button>
+        </div>
+        <p class="hint">Shown on purpose. The same session keeps this conversation (and a pending apply/cancel). A different employee cannot reuse it. New chat starts a blank thread.</p>
+      </section>
+      <section id="identity-card">
+        <p class="kicker">You are</p>
+        <p class="id-line" id="id-line">—</p>
+        <div class="badges" id="id-badges"></div>
+      </section>
+      <section class="scope-box" id="scope">
+        <p class="kicker">What you can do</p>
+        <h2 class="scope-title" id="scope-title">Your leave only</h2>
+        <ul class="can-list" id="scope-list"></ul>
+      </section>
+    </aside>
+
+    <section class="phone">
+      <header class="bot-bar">
+        <div class="avatar" aria-hidden="true">P</div>
+        <div>
+          <h1 class="bot-name">PeopleOps</h1>
+          <p class="bot-sub" id="bot-sub">Veltrix leave and policy bot</p>
+        </div>
+        <div class="health" id="health"><span class="dot" id="health-dot"></span><span id="health-text">Checking</span></div>
+      </header>
+      <main class="thread" id="thread" aria-live="polite"></main>
+      <footer class="dock">
+        <div id="hint-board"></div>
+        <form class="composer" id="form">
+          <textarea id="message" maxlength="4000" rows="1" placeholder="Message PeopleOps…"></textarea>
+          <button class="send" id="send" type="submit" aria-label="Send">➤</button>
+        </form>
+      </footer>
+    </section>
+  </div>
+  <script>
+    const PRESETS = [
+      { id: "E2004", label: "E2004 employee IN" },
+      { id: "E3004", label: "E3004 employee US" },
+      { id: "E4004", label: "E4004 employee DE" },
+      { id: "E2001", label: "E2001 manager IN" },
+      { id: "E1001", label: "E1001 HR IN" },
+    ];
+
+    function scopeFor(role) {
+      if (role === "manager") {
+        return {
+          title: "Your leave + direct reports",
+          items: [
+            { text: "See and manage your own leave.", extra: false },
+            { text: "See who on your team is on leave.", extra: false },
+            { text: "Look up one direct report by employee id.", extra: false },
+            { text: "You cannot approve a teammate’s leave here.", extra: true },
+          ],
+          placeholder: "Ask about your leave, or who on your team is off.",
+        };
+      }
+      if (role === "hr") {
+        return {
+          title: "Any one employee, by id",
+          items: [
+            { text: "See and manage your own leave.", extra: false },
+            { text: "Look up one employee’s balance or requests by id.", extra: false },
+            { text: "Everyone’s leave in one list is refused.", extra: true },
+          ],
+          placeholder: "Ask about policy, or one employee id’s leave.",
+        };
+      }
+      return {
+        title: "Your leave only",
+        items: [
+          { text: "See your balance and requests.", extra: false },
+          { text: "Apply or cancel your own leave (you confirm first).", extra: false },
+          { text: "Other people’s leave is hidden.", extra: true },
+        ],
+        placeholder: "Message PeopleOps about leave, holidays, or policy.",
+      };
+    }
+
+    function hintsFor(role) {
+      const mine = {
+        title: "My leave",
+        items: ["What is my annual leave balance?", "Show my pending leave requests."],
+      };
+      const policy = {
+        title: "Policy and holidays",
+        items: [
+          "How many days of annual leave do employees in my region get?",
+          "How many days of unused annual leave can I carry forward?",
+          "How many sick days do I get?",
+          "What public holidays does my office observe?",
+          "What is the work-from-home policy?",
+        ],
+      };
+      const groups = [mine];
+      if (role === "manager") groups.push({ title: "Team leave", items: ["Who in my team is on leave next week?"] });
+      if (role === "hr") groups.push({ title: "Look up one person", items: ["What is E2004's annual leave balance?"] });
+      groups.push(policy);
+      return groups;
+    }
+
+    const $ = (id) => document.getElementById(id);
+    const employee = $("employee");
+    const session = $("session");
+    const thread = $("thread");
+    const message = $("message");
+    const send = $("send");
+    const form = $("form");
+    const whoami = $("whoami");
+    let busy = false;
+    let profile = null;
+
+    function uid() {
+      if (crypto.randomUUID) return crypto.randomUUID();
+      return "s-" + Math.random().toString(16).slice(2) + Date.now().toString(16);
+    }
+
+    function load() {
+      employee.value = localStorage.getItem("veltrix.employee") || "E2004";
+      session.value = localStorage.getItem("veltrix.session") || uid();
+      persist();
+    }
+
+    function persist() {
+      localStorage.setItem("veltrix.employee", employee.value.trim());
+      localStorage.setItem("veltrix.session", session.value.trim());
+      document.querySelectorAll("#presets .chip").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.id === employee.value.trim());
+      });
+    }
+
+    function el(tag, attrs, text) {
+      const node = document.createElement(tag);
+      Object.entries(attrs || {}).forEach(([k, v]) => {
+        if (k === "class") node.className = v;
+        else node.setAttribute(k, v);
+      });
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    function renderScope() {
+      const role = profile && profile.role;
+      const scope = scopeFor(role);
+      $("scope-title").textContent = scope.title;
+      const list = $("scope-list");
+      list.replaceChildren();
+      scope.items.forEach((item) => {
+        list.append(el("li", { class: item.extra ? "cannot" : "" }, item.text));
+      });
+      $("id-line").textContent = (profile && profile.employee_id) || employee.value.trim() || "—";
+      const badges = $("id-badges");
+      badges.replaceChildren();
+      if (profile) {
+        badges.append(el("span", { class: "badge role-" + (profile.role || "") }, profile.role || "unknown"));
+        if (profile.region) badges.append(el("span", { class: "badge" }, profile.region));
+        if (profile.level) badges.append(el("span", { class: "badge" }, profile.level));
+        $("bot-sub").textContent = "Chatting as " + profile.employee_id + " · " + profile.role + " · " + profile.region;
+      } else {
+        $("bot-sub").textContent = "Veltrix leave and policy bot";
+      }
+      message.placeholder = scope.placeholder;
+      renderHints();
+      if (thread.querySelector(".empty")) showEmpty();
+    }
+
+    function renderHints() {
+      const board = $("hint-board");
+      board.replaceChildren();
+      hintsFor(profile && profile.role).forEach((group) => {
+        const wrap = el("div", { class: "hint-group" });
+        wrap.append(el("p", { class: "kicker" }, group.title));
+        const row = el("div", { class: "hints" });
+        group.items.forEach((q) => {
+          const btn = el("button", { class: "chip", type: "button" }, q);
+          btn.addEventListener("click", () => submit(q));
+          row.append(btn);
+        });
+        wrap.append(row);
+        board.append(wrap);
+      });
+    }
+
+    async function loadProfile() {
+      const who = employee.value.trim();
+      whoami.classList.remove("bad");
+      if (!who) {
+        profile = null;
+        whoami.textContent = "Enter an employee id from the directory.";
+        renderScope();
+        return;
+      }
+      try {
+        const res = await fetch("/me", { headers: { "X-Employee-Id": who } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          profile = null;
+          whoami.classList.add("bad");
+          whoami.textContent = res.status === 404
+            ? "Directory lookup is unavailable on this server."
+            : (data.detail || "Unknown employee id.");
+          renderScope();
+          return;
+        }
+        profile = data;
+        whoami.textContent = "Directory record loaded. Role is not taken from the chat.";
+      } catch {
+        profile = null;
+        whoami.classList.add("bad");
+        whoami.textContent = "Could not load the directory record.";
+      }
+      renderScope();
+    }
+
+    function showEmpty() {
+      thread.replaceChildren();
+      const role = profile && profile.role;
+      const scope = scopeFor(role);
+      const box = el("div", { class: "empty" });
+      box.append(el("div", { class: "avatar" }, "P"));
+      box.append(el("h2", {}, "PeopleOps"));
+      box.append(el("p", {}, "Questions use the signed-in employee id. Role and region come from the directory, not from the message."));
+      const cards = el("div", { class: "cards" });
+      const mine = el("div", { class: "card" });
+      mine.append(el("h3", {}, "My leave"), el("p", {}, "Balance, requests, apply, and cancel — for you only. Apply needs Yes, confirm."));
+      cards.append(mine);
+      const visibility = el("div", { class: "card" });
+      visibility.append(el("h3", {}, scope.title), el("p", {}, scope.items[0].text + " " + (scope.items[1] ? scope.items[1].text : "")));
+      cards.append(visibility);
+      if (role === "manager") {
+        const noApprove = el("div", { class: "card" });
+        noApprove.append(el("h3", {}, "No approvals"), el("p", {}, "Managers can view team leave. This desk does not approve a request."));
+        cards.append(noApprove);
+      }
+      box.append(cards);
+      thread.append(box);
+    }
+
+    function addMessage(kind, text, extras) {
+      if (thread.querySelector(".empty")) thread.replaceChildren();
+      const row = el("div", { class: "row " + kind });
+      row.append(el("div", { class: "face " + (kind === "user" ? "you" : "bot") }, kind === "user" ? "You" : "P"));
+      const card = el("article", { class: "msg " + kind });
+      const meta = el("div", { class: "meta" });
+      meta.append(el("span", { class: "badge" }, kind === "user" ? "You" : "PeopleOps"));
+      if (extras && extras.route) meta.append(el("span", { class: "badge" }, extras.route));
+      if (extras && extras.pending) meta.append(el("span", { class: "badge" }, "needs your confirmation"));
+      card.append(meta);
+      card.append(el("div", { class: extras && extras.error ? "answer error" : "answer" }, text));
+      const cites = (extras && extras.citations) || [];
+      if (cites.length) {
+        const box = el("div", { class: "sources" });
+        box.append(el("p", { class: "sources-title" }, cites.length === 1 ? "Source" : "Sources"));
+        const list = el("div", { class: "source-list" });
+        cites.forEach((c) => {
+          const item = el("div", { class: "source" });
+          item.append(el("div", { class: "source-id" }, c.doc_id || "Document"));
+          item.append(el("div", { class: "source-loc" }, c.locator ? "Section: " + c.locator : "Full document"));
+          list.append(item);
+        });
+        box.append(list);
+        card.append(box);
+      }
+      const tools = (extras && extras.tools) || [];
+      if (tools.length) {
+        const used = el("div", { class: "used" }, "Used: " + tools.map((t) => (t.name || "tool") + " (" + (t.status || "") + ")").join(", "));
+        card.append(used);
+      }
+      if (extras && extras.pending) {
+        const confirm = el("button", { class: "confirm", type: "button" }, "Yes, confirm");
+        confirm.addEventListener("click", () => submit("Yes, confirm"));
+        card.append(confirm);
+      }
+      row.append(card);
+      thread.append(row);
+      thread.scrollTop = thread.scrollHeight;
+      return card;
+    }
+
+    async function ping() {
+      const dot = $("health-dot");
+      const text = $("health-text");
+      try {
+        const res = await fetch("/health");
+        const data = await res.json().catch(() => ({}));
+        const ok = res.ok && data.status === "ok";
+        dot.className = "dot " + (ok ? "ok" : "wait");
+        text.textContent = ok ? "Online" : "Starting";
+        return ok;
+      } catch {
+        dot.className = "dot bad";
+        text.textContent = "Offline";
+        return false;
+      }
+    }
+
+    async function submit(preset) {
+      if (busy) return;
+      const text = (preset || message.value).trim();
+      const who = employee.value.trim();
+      const sid = session.value.trim();
+      if (!text || !who || !sid) return;
+      busy = true;
+      send.disabled = true;
+      if (!preset) message.value = "";
+      addMessage("user", text);
+      const pending = addMessage("assistant", "Working…");
+      pending.classList.add("pending");
+      try {
+        const res = await fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Employee-Id": who },
+          body: JSON.stringify({ session_id: sid, message: text }),
+        });
+        const data = await res.json().catch(() => ({}));
+        const pendingRow = pending.closest(".row");
+        if (pendingRow) pendingRow.remove();
+        else pending.remove();
+        if (!res.ok) {
+          addMessage("assistant", data.detail || "Request failed (" + res.status + ").", { error: true, route: String(res.status) });
+          return;
+        }
+        addMessage("assistant", data.answer || "", {
+          route: data.route,
+          pending: !!data.pending_confirmation,
+          citations: data.citations || [],
+          tools: data.tool_calls || [],
+        });
+      } catch {
+        const pendingRow = pending.closest(".row");
+        if (pendingRow) pendingRow.remove();
+        else pending.remove();
+        addMessage("assistant", "Could not reach the assistant.", { error: true });
+      } finally {
+        busy = false;
+        send.disabled = false;
+        message.focus();
+      }
+    }
+
+    PRESETS.forEach((p) => {
+      const btn = el("button", { class: "chip", type: "button" }, p.label);
+      btn.dataset.id = p.id;
+      btn.addEventListener("click", () => {
+        employee.value = p.id;
+        session.value = uid();
+        persist();
+        showEmpty();
+        loadProfile();
+      });
+      $("presets").append(btn);
+    });
+    employee.addEventListener("change", () => {
+      session.value = uid();
+      persist();
+      showEmpty();
+      loadProfile();
+    });
+    session.addEventListener("change", persist);
+    $("new-session").addEventListener("click", () => {
+      session.value = uid();
+      persist();
+      showEmpty();
+    });
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      submit();
+    });
+    message.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        submit();
+      }
+    });
+
+    load();
+    renderScope();
+    showEmpty();
+    loadProfile();
+    ping();
+    setInterval(ping, 5000);
+  </script>
+</body>
+</html>

@@ -182,6 +182,26 @@ def test_only_post_is_allowed(chat):
     assert chat.client.get("/chat").status_code == 405
 
 
+def test_me_returns_directory_fields_without_personal_data(chat):
+    missing = chat.client.get("/me")
+    assert missing.status_code == 401
+    unknown = chat.client.get("/me", headers={"X-Employee-Id": "NOBODY"})
+    assert unknown.status_code == 401
+    ok = chat.client.get("/me", headers={"X-Employee-Id": "E1"})
+    assert ok.status_code == 200
+    body = ok.json()
+    assert body["employee_id"] == "E1"
+    assert body["role"] == "employee"
+    assert body["region"] == "IN"
+    assert body["level"]
+    assert body["join_date"]
+    blob = json.dumps(body)
+    assert "@" not in blob
+    assert "phone" not in body
+    assert "full_name" not in body
+    assert "Eli" not in blob
+
+
 # =========================================================================================================
 # 503 until ingestion has finished
 # =========================================================================================================

@@ -39,7 +39,7 @@ from app.retrieval.policy_resolver import (
 
 MAX_UPCOMING_CHUNKS: Final = 3
 CURRENT_FIRST: Final = 5  # current chunks placed before the upcoming ones in the prompt
-CURRENT_K: Final = 8
+CURRENT_K: Final = 12
 UPCOMING_K: Final = 3
 MAX_TOPIC_CHARS: Final = 80
 MAX_VALUE_CHARS: Final = 120
@@ -150,6 +150,11 @@ _META_ROW: Final = re.compile(
 _OTHER_LEAVE: Final = re.compile(
     r"\b(carry[- ]forward|wellbeing|sick leave|parental|bereavement|medical certificate)\b", re.I
 )
+_CARRY_HINT: Final = re.compile(r"carr(?:y|ied)(?:\s+forward|\s+over)|may not exceed", re.I)
+_PAYOUT_HINT: Final = re.compile(r"encash|paid out|on leaving|leaving the company", re.I)
+_ACCRUAL_HINT: Final = re.compile(
+    r"accrual|earned per|days per month|length of service|tenure", re.I
+)
 
 
 def _display_value(value: str) -> str:
@@ -160,20 +165,130 @@ def fold_topic(topic: str) -> str:
     """One topic for every tenure band of the same leave rule.
 
     Models often emit 'annual leave accrual, 2 to less than 5 years' as a
-    separate topic; those are complementary values of one rule.
+    separate topic; those are complementary values of one rule. A flat
+    'annual leave' / 'leave days' figure is the same rule as the schedule.
+    Carry-forward, sick, parental and similar stay their own topics.
     """
     text = canon_topic(topic)
-    if text in {"leave days", "leave day"}:
-        return text
+    if text in {"leave days", "leave day", "paid annual leave", "annual leave days", "annual leave allowance"}:
+        return "annual leave accrual"
     if not _LEAVE_TOPIC.search(text):
         return text
     stripped = _BAND_TAIL.sub("", text).strip(" ,;-")
     stripped = re.sub(r"\bversion \d+\b", "", stripped).strip()
     if "carry" in stripped or "wellbeing" in stripped:
         return stripped or text
-    if "accrual" in stripped or "entitlement" in stripped or stripped == "annual leave":
+    if "encash" in stripped or "payout" in stripped:
+        return stripped or text
+    if any(w in stripped for w in ("sick", "parental", "bereavement", "maternity")):
+        return stripped or text
+    if "accrual" in stripped or "entitlement" in stripped or "annual leave" in stripped:
         return "annual leave accrual"
     return stripped or text
+
+
+def _topic_for_chunk(topic: str, chunk_text: str, value: str = "") -> str:
+    """A carry-forward / cap / payout excerpt is not the accrual rule, even if the model said so."""
+    if topic != "annual leave accrual":
+        return topic
+    if _value_looks_like_payout(value, chunk_text):
+        return "annual leave encashment"
+    if _value_looks_like_carry(value, chunk_text):
+        return "annual leave carry forward"
+    if _PAYOUT_HINT.search(chunk_text) and not _ACCRUAL_HINT.search(chunk_text):
+        return "annual leave encashment"
+    if _CARRY_HINT.search(chunk_text) and not _ACCRUAL_HINT.search(chunk_text):
+        return "annual leave carry forward"
+    return topic
+
+
+def _value_looks_like_payout(value: str, chunk_text: str) -> bool:
+    number = _NUMBER.search(value)
+    if not number:
+        return False
+    for sentence in re.split(r"[\n.;]", chunk_text):
+        if number.group(0) not in sentence:
+            continue
+        if _PAYOUT_HINT.search(sentence) and not _ACCRUAL_HINT.search(sentence):
+            return True
+    return False
+
+
+def _value_looks_like_carry(value: str, chunk_text: str) -> bool:
+    number = _NUMBER.search(value)
+    if not number:
+        return False
+    for sentence in re.split(r"[\n.;]", chunk_text):
+        if number.group(0) not in sentence:
+            continue
+        if _CARRY_HINT.search(sentence) and not _ACCRUAL_HINT.search(sentence):
+            return True
+    return False
+
+
+_FOCUS_CARRY: Final = "carry"
+_FOCUS_SICK: Final = "sick"
+_FOCUS_ENCASH: Final = "encashment"
+_FOCUS_ACCRUAL: Final = "accrual"
+
+
+def question_focus(question: str) -> str | None:
+    """Which leave rule the question is asking for, or None when it is not specific."""
+    text = question.casefold()
+    if any(w in text for w in ("carry", "carried forward", "carry over")):
+        return _FOCUS_CARRY
+    if "sick" in text:
+        return _FOCUS_SICK
+    if any(w in text for w in ("encash", "paid out", "payout", "leaving the company")):
+        return _FOCUS_ENCASH
+    if any(
+        w in text
+        for w in (
+            "accrue",
+            "accrual",
+            "annual leave",
+            "leave days",
+            "how many days",
+            "entitlement",
+            "balance",
+        )
+    ):
+        return _FOCUS_ACCRUAL
+    return None
+
+
+def topic_matches_focus(topic: str, focus: str | None) -> bool:
+    """True when a resolved topic is what the question asked about."""
+    if focus is None:
+        return True
+    folded = fold_topic(topic)
+    if focus == _FOCUS_CARRY:
+        return "carry" in folded
+    if focus == _FOCUS_SICK:
+        return "sick" in folded
+    if focus == _FOCUS_ENCASH:
+        return "encash" in folded or "payout" in folded
+    if focus == _FOCUS_ACCRUAL:
+        if any(w in folded for w in ("carry", "encash", "payout", "sick", "parental", "bereavement", "maternity")):
+            return False
+        return folded == "annual leave accrual"
+    return True
+
+
+def facts_for_question(facts: Facts, question: str) -> Facts:
+    """Drop resolved topics the question did not ask about (carry vs payout vs accrual).
+
+    Extraction and table recovery can still surface a neighbouring number. If those
+    stay in ``Facts``, composition is required to mention them. Keep the matching
+    topics when any exist; otherwise leave the facts unchanged.
+    """
+    focus = question_focus(question)
+    if focus is None:
+        return facts
+    wanted = tuple(topic for topic in facts.topics if topic_matches_focus(topic.topic, focus))
+    if not wanted or wanted == facts.topics:
+        return facts
+    return Facts(facts.reference, wanted, facts.not_covered)
 
 
 def filter_not_covered(not_covered: Iterable[str], answered_topics: Iterable[str]) -> tuple[str, ...]:
@@ -352,7 +467,7 @@ def build_claims_report(
                 source = (chunk.doc_id, chunk.locator)
                 if not from_table and source in table_sources:
                     continue
-            topic = fold_topic(item["topic"])
+            topic = _topic_for_chunk(fold_topic(item["topic"]), chunk.text, display)
             value = canon_value(item["value"])
             if not topic or not value or len(topic) > MAX_TOPIC_CHARS or len(display) > MAX_VALUE_CHARS:
                 dropped.append(DROP_VALUE)

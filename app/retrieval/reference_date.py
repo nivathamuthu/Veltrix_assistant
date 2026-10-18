@@ -20,15 +20,15 @@ date, month or year. Rules:
   (2026, README B9). It is then treated like any full date: in the past it is
   used, today or later it is not in the past, so the result is today. A day and
   month followed by a stray number ("1 August 25") is unclear, not guessed. The
-  word "may" counts as the month only when nothing but punctuation follows it
-  ("on 5 May."), so "up to 5 may be carried over" is not a date.
+  word "may" counts as the month only when nothing but punctuat
 * If a no-year date sits next to a different explicit year ("in 2025, on 1
   August", "last year on 1 August") it is unclear: 2026 would contradict the
   year the user wrote.
 * Future dates, months and years never change the reference date (today).
 * Numbers that only look like years (``$2025``, ``2,025``, ``2025.50``,
   ``2025%``, ``FY2025``, ``2025/26``, ``12025``) are not years.
-* A more specific date wins: full dates (including no-year ones), then months,
+* A more specific date wins: full dates ion follows it
+  ("on 5 May."), so "up to 5 may be carried over" is not a date.(including no-year ones), then months,
   then years. Several DIFFERENT past dates (or months, or years) at the same
   level are ambiguous, as is any impossible date (31 February, or 29 February
   in a non-leap default year) or ambiguous numeric date: the value stays

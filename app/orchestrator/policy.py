@@ -213,6 +213,7 @@ class LLMPolicyResponder(Responder):
         facts = evidence.resolve_facts(
             claims, shown, requester, reference, extraction.not_covered, names=names
         )
+        facts = evidence.facts_for_question(facts, request.message)
         retrieved_docs = sorted({c.doc_id for c in chunks})
         sent_docs = sorted({d for d, _ in sent_extract})
         logger.info(
