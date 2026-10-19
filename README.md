@@ -120,7 +120,7 @@ Leave types are `annual` and `sick` only. Writes are self-only and need an expli
 
 ## Who can see whose leave
 
-Decided in `may_view_employee` / `is_manager` from the DB role, not from the message.
+Decided in `may_view_employee` / `is_manager` fr  om the DB role, not from the message.
 
 | Role | Leave data |
 |---|---|
