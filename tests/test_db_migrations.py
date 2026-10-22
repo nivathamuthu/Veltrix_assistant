@@ -114,6 +114,7 @@ def test_foreign_keys_still_consistent_after_migration(core_db):
         ),
         ("sessions", ["session_id", "employee_id", "created_at"]),
         ("pending_proposals", ["session_id", "action", "payload_json", "created_at"]),
+        ("apply_drafts", ["session_id", "leave_type", "dates_text", "created_at"]),
     ],
 )
 def test_new_table_columns(synthetic_db, table, expected):

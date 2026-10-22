@@ -76,6 +76,10 @@ def expand_retrieval_query(query: str, region: str | None = None) -> str:
         extras.append("learning and development budget")
     if any(w in low for w in ("work from home", "work-from-home", "remote", "wfh")):
         extras.append("remote hybrid work from home")
+    if any(w in low for w in ("new joiner", "new joiners", "first week", "onboarding", "laptop")):
+        extras.append("wiki tips for new joiners first week laptop onboarding buddy")
+    if any(w in low for w in ("manager handbook", "people manager handbook", "one to one", "one-to-one")):
+        extras.append("people manager handbook one to ones")
     if any(w in low for w in ("password", "security", "vpn")):
         extras.append("IT security policy")
     if any(w in low for w in ("working time", "overtime", "working hours")):

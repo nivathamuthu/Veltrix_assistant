@@ -522,6 +522,12 @@ def test_how_many_days_of_annual_leave_expands_to_the_accrual_schedule_hint():
     carry = expand_retrieval_query("How many days can I carry forward?", region="IN")
     assert "carry forward" in carry
     assert REGION_SEARCH_TERMS["IN"] in carry
+    joiners = expand_retrieval_query("What should new joiners do in their first week?", region="IN")
+    assert "new joiners" in joiners.lower()
+    assert "laptop" in joiners.lower()
+    handbook = expand_retrieval_query("What does the manager handbook say about one to ones?", region="IN")
+    assert "manager handbook" in handbook.lower()
+    assert "one to ones" in handbook.lower()
 
 
 def _accrual_schedule_chunks():

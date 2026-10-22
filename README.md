@@ -19,6 +19,8 @@ Source of truth for behaviour: this README (Part B rules below) and `veltrix_ass
 10. [Sample queries tested](#sample-queries-tested)
 11. [Assumptions](#assumptions)
 12. [Known limitations](#known-limitations)
+13. [Chat UI and LLM resilience](#chat-ui-and-llm-resilience)
+14. [TASK.pdf compliance map](#taskpdf-compliance-map)
 
 ## Hard constraints
 
@@ -105,7 +107,15 @@ Header `X-Employee-Id` (required). Body: `{"session_id": "...", "message": "..."
 HTTP errors are used only for: `400` invalid or missing body, `401` missing or unknown `X-Employee-Id`, `403` `session_id` belongs to another employee. Every refusal is a normal `200` with route `refuse`.
 
 ### `GET /`
-Serves the PeopleOps chat UI (`app/static/index.html`). Identity chips call `GET /me`. Bot answers show `citations` as a visible **Sources** block (`doc_id` + section). Sign-in shows employee id and session id (needed for apply/cancel confirmation and the 403 session check).
+Serves the PeopleOps chat UI (`app/static/index.html`).
+
+- **Left rail:** sign-in (employee id presets, session id, **New chat**), role scope, and **Ask — pick a question** chips grouped by topic (my leave, team leave for managers, manager handbook, leave policy, WFH, new joiners, travel expenses, holidays).
+- **Right panel:** chat thread and message box only (chips do not sit under the conversation).
+- Sign-in chips load from `GET /signin-presets` (one employee and one manager per region, plus one HR id from the current `veltrix.db`; no names). Presets call `GET /me` to load role and region (not from the message).
+- Policy answers still return `citations` in the JSON API; the chat UI shows the answer text only (no Sources block). Apply/cancel need the same session id and an explicit **yes** confirmation.
+
+### `GET /signin-presets`
+Returns `{ "presets": [{ "employee_id", "role", "region", "label" }, ...], "hr_lookup_example_id" }` from the mounted database (TASK: evaluator DB rows may differ). No authentication; no personal data.
 
 ### `GET /me`
 Header `X-Employee-Id`. Returns only directory fields that are not personal data: `employee_id`, `role`, `region`, `level`, `join_date`. `401` if the header is missing or unknown. No name, email, or phone.
@@ -120,7 +130,7 @@ Leave types are `annual` and `sick` only. Writes are self-only and need an expli
 
 ## Who can see whose leave
 
-Decided in `may_view_employee` / `is_manager` fr  om the DB role, not from the message.
+Decided in `may_view_employee` / `is_manager` from the DB role, not from the message.
 
 | Role | Leave data |
 |---|---|
@@ -208,6 +218,8 @@ flowchart TD
 | 3,000-token corpus limit | `enforce_budget` in `app/llm/budget.py` (`cl100k_base`). Every call goes through `call_with_corpus` in `app/llm/guard.py`; each call logs `corpus_tokens=`. Cap four LLM calls per message (`MAX_CALLS_PER_MESSAGE`). |
 | Writes need confirmation | `propose_apply` / `propose_cancel` / `execute_pending` / `is_confirmation` in `app/orchestrator/confirmation.py`. Stored in `pending_proposals`. Tools run inside `Database.transaction`. |
 | No personal data in logs | `register_pii`, `redact`, `mask_email`, `scrub_visible_text` in `app/logging_setup.py`. Answers pass `scrub_visible_text` in `enforce_invariants`. Tool args go through `safe_args`. |
+| Unambiguous tool and policy phrases (no analyzer LLM) | `match_unambiguous_tool` / `match_unambiguous_policy` in `app/orchestrator/tool_intent.py`; wired in `LLMAnalyzer.analyze` and `OrchestratorService.handle`. Includes balance/list/team/apply/cancel and chip-shaped policy/holiday questions. |
+| Corpus-only answers when extract/compose LLM fails (selected topics) | `_answer_from_chunks` / `_topic_fallback` in `app/orchestrator/policy.py` (wiki, handbook, travel, and Part A leave-policy chip phrases); sanitized (no injection lines or emails). Compose failure still uses resolved facts via `render_answer`. |
 
 See [`DESIGN.md`](DESIGN.md) for details.
 
@@ -264,19 +276,65 @@ Apply for **sick** leave uses the same path as annual (`leave_type=sick`, dates 
 - **Unresolved conflicts:** status `conflict`; both values and both sources are shown and the conflict is stated. Nothing is picked arbitrarily.
 - **Upcoming changes:** `upcoming_change` may mention at most three readable, in-region documents with `effective_date` after the reference that would win on that date, each with its date. They are never stated as current.
 - **OCR or parse failure:** the document is skipped and logged by `doc_id` / error type (`app/ingestion/corpus.py`). Missing files and unmanifested files are skipped the same way. The service still starts if anything remains to index.
-- **LLM unavailable:** `Provider.complete` retries **once** on timeout, HTTP 429, or 5xx, then raises `LLMUnavailable`. Invalid analyzer/extraction JSON is the same path. `/chat` returns HTTP 200, route `no_answer`, and does not write.
+- **LLM unavailable:** `Provider.complete` retries **once** on timeout, HTTP 429, or 5xx, then raises `LLMUnavailable`. Invalid analyzer/extraction JSON is the same path. Most turns then return HTTP 200, route `no_answer`, answer *"I can't answer that right now…"*, and do not write. **Exceptions:** unambiguous tool/policy phrases skip the analyzer; some policy questions use retrieved corpus text without a successful extract/compose (see [Chat UI and LLM resilience](#chat-ui-and-llm-resilience)).
 - **Pending confirmation:** one row per `session_id` in `pending_proposals`. Discarded on any non-confirm message (including a guard refusal). Replaced if the employee changes the details. "Don't ask me to confirm" is ignored. `claim_proposal` reads and deletes in one transaction so two concurrent confirms cannot both execute.
 - **Holidays:** extracted at ingestion from calendar documents (`extract_holidays` / `classify_kind` in `app/ingestion/holidays.py`). Only `kind=public` rows count as non-working days. None are hard-coded.
 - **Role and region:** always from the `employees` row loaded by `X-Employee-Id`. Claims in the message are ignored.
+- **Fresh evaluator database:** `./data/veltrix.db` may be replaced with different employee rows. Server logic and `python -m app.live_smoke` read ids from the DB; the UI uses `GET /signin-presets` instead of hard-coded ids.
+- **`no_answer` wording (TASK §8.1):** in-scope questions with no eligible document use a message that the documents do not cover the question and suggest contacting HR (`NO_ANSWER_MESSAGE` in `app/orchestrator/response.py`). LLM/timeouts use a separate retry message but the same route.
 
 ## Known limitations
 
 - **OCR** runs only on PDF pages with fewer than 20 non-space text-layer characters. Accuracy on a poor scan is not measured here. A page that OCR cannot render is treated as a parse failure for that page/document and skipped.
 - **Tables:** rendered row-wise with headers repeated (`app/ingestion/parsers/tables.py`). Merged cells, stacked values, and headerless boxes are best-effort; a row that still exceeds the chunk limit is split on words (logged).
-- **LLM outages and rate limits** affect analyze, extract, and compose. After one retry the turn is `no_answer`. Offline (no API key) keeps the null analyzer and placeholder responder. Unambiguous tool phrases (`What is my annual leave balance?`, `apply for annual leave …`) skip the analyzer LLM.
+- **LLM outages and rate limits** affect analyze, extract, and compose. After one retry the turn is usually `no_answer`. Offline (no API key) keeps the null analyzer and placeholder responder. **Tool** phrases (`What is my annual leave balance?`, `apply for annual leave …`) and many **UI chip** policy phrases skip the analyzer. Free-form wording (e.g. *"Manager give document of handbook"*) often still needs the analyzer and may fail when Gemini is down.
+- **Partial resilience:** for a subset of policy questions, retrieval plus `_answer_from_chunks` can return `rag` with citations even when extract times out; manager handbook answers require a manager (or HR) identity and readable `HB-MANAGER`.
 - **Topic grouping** for precedence uses the model's extraction plus `canon_topic` / `fold_topic`. Unusual phrasing can miss a claim or split one rule into two topics. Table-row recovery and question-focus filtering reduce carry/encashment leaking into entitlement answers.
 - **Timeout vs write:** `/chat` wraps the worker thread in `asyncio.wait_for`. If apply/cancel has already committed when the deadline fires, the client still receives `200` `no_answer` (`TIMEOUT_MESSAGE`) while the database change stands. The worker is not aborted. A timeout *before* confirmation does not write.
 - **Test speed:** `make test` uses `FakeEmbedder` and `MockProvider` (no network). Real FastEmbed + OCR run only at service startup. Three optional tests in `tests/test_embeddings_real.py` need the cached model.
-- **Gemini free tier:** `gemini-3.8-flash` can hit a daily cap (`RESOURCE_EXHAUSTED`). A 429 still becomes `no_answer` after one deadline-aware retry. `LLM_MIN_INTERVAL_SECONDS` / live-smoke pauses reduce per-minute 429s.
+- **Gemini free tier:** default chat model is `gemini-3.8-flash` when `LLM_PROVIDER=google` and `LLM_MODEL` is empty. Daily or per-minute caps (`RESOURCE_EXHAUSTED`, timeouts) still yield `no_answer` for LLM-dependent steps after one retry. Mitigations: use UI chips or the exact phrases in `match_unambiguous_policy`, raise `LLM_MIN_INTERVAL_SECONDS`, increase pauses in live-smoke, or switch provider/model in `.env`.
 - **Pinned today:** the live-smoke weekend apply ("this Saturday through Sunday") is ambiguous when the system date is Saturday. Recorded runs set `APP_TODAY=2026-10-15` (Thursday) so that query matches the Part A date rules.
 - **No manager approval in the assistant:** requests are stored as `pending`. Managers can view team leave only.
+
+## Chat UI and LLM resilience
+
+Google Gemini (or any configured chat provider) can be slow, rate-limited, or unavailable. The assistant is designed so **leave tools** and **many policy chips** still work without calling the analyzer LLM.
+
+| You do | Analyzer LLM | Typical outcome when Gemini is OK | When Gemini fails on analyze/extract |
+|---|---|---|---|
+| Click a **chip** or send an exact chip sentence (e.g. `What does the manager handbook say about one to ones?`) | Skipped for listed policy/tool phrases | `rag` or `tool` with citations or tool data | Policy: often still `rag` via retrieval + `_answer_from_chunks` for wiki / handbook / travel topics. Tools: still work (DB only). |
+| Type **free-form** text (e.g. `Manager give document of handbook`) | Usually required | Works if analyze + extract + compose succeed | Often `no_answer` (*can't answer right now*) unless retrieval fallback matches topic hints (`manager handbook`, `travel`, etc.). |
+| **Apply / cancel** leave with confirmation | Skipped when intent is unambiguous | `tool` + `pending_confirmation`, then `yes` | Same if classify reaches apply/cancel without analyzer failure. |
+
+**Practical tips**
+
+1. Sign in with the right preset (e.g. **E2001** manager IN for team leave and **People Manager Handbook**; **E2004** employee IN for own leave).
+2. Prefer **Ask — pick a question** chips on the left, or copy their wording.
+3. Manager handbook document id is **`HB-MANAGER`** (`access_level: managers`). Employees get a refusal or no coverage, not the handbook text.
+4. If every question returns `no_answer`, check `.env` (`GOOGLE_API_KEY`, `LLM_PROVIDER`), container logs (`llm_failed`, `extract_unavailable`, `chat_timeout`), and `GET /health` (503 until ingestion finishes).
+5. Rebuild the running container after Python changes: `docker compose up --build` (Compose mounts only `./data` by default).
+
+Chip phrases and regexes live in `app/orchestrator/tool_intent.py` (`match_unambiguous_policy`, `match_unambiguous_tool`). UI copy is in `app/static/index.html` (`hintsFor`).
+
+## TASK.pdf compliance map
+
+Behavioural source of truth: [`veltrix_assessment/TASK.pdf`](veltrix_assessment/TASK.pdf). This table is the quick audit checklist (§ = TASK section).
+
+| TASK § | Requirement | Where enforced |
+|---|---|---|
+| 2.3 | Do not alter/drop `employees` / leave tables; evaluator may swap DB rows | `app/db/migrations.py` (add-only); `GET /signin-presets`; `app/live_smoke.py` picks ids from DB |
+| 3.1 | Role document access (`all` / `managers` / `hr`) | `readable_access_levels` in `app/retrieval/policy_resolver.py`; pre-filter in `app/ingestion/index.py` |
+| 4.1–4.3 | Automatic ingestion, citations, ≤3k corpus tokens / call | `app/ingestion/pipeline.py`; `app/llm/guard.py`; `app/llm/budget.py` |
+| 5 | Eligibility, precedence, conflicts, upcoming changes | `app/retrieval/policy_resolver.py`; `app/orchestrator/evidence.py` |
+| 6.1–6.4 | Five tools, apply/cancel rules, rejections with `error` | `app/tools/`; `app/working_days.py`; holidays from `app/ingestion/holidays.py` |
+| 7.1–7.3 | Identity from header; session 403; fixed refusal for forbidden leave | `app/api/chat.py`; `app/tools/access.py`; `REFUSAL_MESSAGE` in `app/tools/common.py` |
+| 7.4 | PII in logs/answers/tool args | `app/logging_setup.py`; `scrub_visible_text`; `safe_args` |
+| 7.5 | Injection / system prompt → `refuse` | `app/orchestrator/guards.py` (before LLM) |
+| 8.1 | Routes (`rag`, `tool`, `hybrid`, `clarify`, `no_answer`, `refuse`) | `app/orchestrator/response.py` `enforce_invariants` |
+| 8.1 | `no_answer` → documents do not cover + contact HR | `NO_ANSWER_MESSAGE`, `NO_COVERAGE_MESSAGE` in `app/orchestrator/response.py` / `policy.py` |
+| 8.2 | Two-step apply/cancel with confirmation | `app/orchestrator/confirmation.py` |
+| 9 | `POST /chat`, `GET /health`, 400/401/403 | `app/api/chat.py` |
+| 10 | `./data` mount, `.env.example`, port 8000, health within 10 min | `docker-compose.yml`; `.env.example`; ingestion in `app/main.py` |
+| 12.1 | Must-pass (access, token cap, modified corpus) | `tests/test_must_pass.py`, `tests/test_corpus_requirements.py`, suite under `tests/` |
+
+Optional UI: citations remain in the JSON API; the chat UI does not render a Sources block (TASK does not require a UI).

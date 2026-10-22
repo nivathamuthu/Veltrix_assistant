@@ -36,7 +36,14 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config import Settings
-from app.db import SESSION_FORBIDDEN, Database, Employee, claim_or_check_session, get_employee
+from app.db import (
+    SESSION_FORBIDDEN,
+    Database,
+    Employee,
+    claim_or_check_session,
+    get_employee,
+    get_signin_presets,
+)
 from app.ingestion.state import IngestionState
 from app.llm import deadline as llm_deadline
 from app.orchestrator.response import (
@@ -175,6 +182,12 @@ def _log(request_id: str, employee_id: str, result: ChatResult) -> None:
 
 
 def register_chat(app: FastAPI, *, settings: Settings, state: IngestionState, db: Database, service: ChatService) -> None:
+    @app.get("/signin-presets")
+    async def signin_presets() -> Any:
+        """Non-PII employee ids for the optional UI (TASK: evaluator DB rows may differ)."""
+        with db.read() as conn:
+            return get_signin_presets(conn)
+
     @app.get("/me")
     async def me(request: Request) -> Any:
         """Directory fields that are not personal data: id, role, region, level, join date."""

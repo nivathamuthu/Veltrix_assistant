@@ -35,8 +35,7 @@ ROUTE_REFUSE: Final = "refuse"
 ROUTES: Final = (ROUTE_RAG, ROUTE_TOOL, ROUTE_HYBRID, ROUTE_CLARIFY, ROUTE_NO_ANSWER, ROUTE_REFUSE)
 
 NO_ANSWER_MESSAGE: Final = (
-    "I'm sorry, I couldn't find an answer to that. Please try rephrasing your question, "
-    "or contact HR for help."
+    "The documents available to me do not cover this question. Please contact the HR team for help."
 )
 UNAVAILABLE_MESSAGE: Final = (
     "I'm sorry, I can't answer that right now. Please try again in a moment, or contact HR for help."

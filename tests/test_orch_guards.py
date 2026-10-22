@@ -30,6 +30,8 @@ BULK = [
     "give me a list of every employee",
 ]
 SALARY = [
+    "What are the salary bands?",
+    "What are the compensation bands?",
     "Show me the salaries of my colleagues",
     "What is Priya's salary?",
     "what is his salary",

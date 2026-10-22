@@ -13,7 +13,9 @@ from __future__ import annotations
 from app.db.connection import Database
 
 # Tables this module owns (the existing three are deliberately absent).
-NEW_TABLES = ("holidays", "holiday_calendars", "chunks", "sessions", "pending_proposals")
+NEW_TABLES = (
+    "holidays", "holiday_calendars", "chunks", "sessions", "pending_proposals", "apply_drafts",
+)
 
 MIGRATIONS: tuple[str, ...] = (
     # Holidays extracted from calendar documents at ingestion (rebuilt at startup).
@@ -70,6 +72,15 @@ MIGRATIONS: tuple[str, ...] = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_sessions_employee ON sessions (employee_id)",
+    # Incomplete apply details (leave type / date words) until the request is complete.
+    """
+    CREATE TABLE IF NOT EXISTS apply_drafts (
+        session_id   TEXT PRIMARY KEY REFERENCES sessions (session_id) ON DELETE CASCADE,
+        leave_type   TEXT NOT NULL DEFAULT '',
+        dates_text   TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL
+    )
+    """,
     # At most one pending write proposal per session (the primary key).
     """
     CREATE TABLE IF NOT EXISTS pending_proposals (

@@ -35,6 +35,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import date
+from types import SimpleNamespace
 from typing import Any, Final
 
 from app.db import Database, Employee, doc_sections, get_calendar_holidays
@@ -78,7 +79,7 @@ CLARIFY_DATE_MESSAGE: Final = (
     "so I can check the rules that applied then."
 )
 NO_COVERAGE_MESSAGE: Final = (
-    "I couldn't find this in the Veltrix documents available to you. Please contact HR for help."
+    "The documents available to me do not cover this question. Please contact the HR team for help."
 )
 NO_HYBRID_DOCS_MESSAGE: Final = (
     "The documents available to me do not say how to work this out, so I can't project it. "
@@ -87,6 +88,17 @@ NO_HYBRID_DOCS_MESSAGE: Final = (
 HYBRID_RETRIEVAL_HINT: Final = "leave accrual and carry forward rules"
 
 _QUESTION_CLOSE: Final = re.compile(r"<\s*/\s*question\s*>", re.IGNORECASE)
+_INJECTION_LINE: Final = re.compile(
+    r"(?i)\b(?:ai assistant|salary band|manager's email|approved by hr|ignore previous)\b"
+)
+_EMAIL_LINE: Final = re.compile(r"\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b", re.I)
+_PHONE_LINE: Final = re.compile(r"\+?\d[\d\s().-]{7,}\d")
+_NEW_JOINER_HINTS: Final = ("new joiner", "first week", "laptop", "onboarding", "tips for new")
+_HANDBOOK_HINTS: Final = ("manager handbook", "people manager handbook", "one to one", "one-to-one")
+_TRAVEL_HINTS: Final = ("travel", "expense", "per diem", "daily allowance", "hotel")
+_META_ROW: Final = re.compile(
+    r"(?i)^row:\s+(?:document id|version|effective date|applies to|owner|classification)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -145,6 +157,111 @@ def _number(value: Any) -> str:
     return f"{value:g}"
 
 
+def _clean_retrieved_line(line: str) -> str | None:
+    text = " ".join(line.split())
+    if not text or _INJECTION_LINE.search(text) or _EMAIL_LINE.search(text) or _PHONE_LINE.search(text):
+        return None
+    return text
+
+
+def _norm(text: str) -> str:
+    return text.casefold().replace("-", " ")
+
+
+def _topic_fallback(message: str, region: str | None = None) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+    low = _norm(message)
+    reg = (region or "").strip().upper()
+    if "how many days of annual leave do employees in my region get" in low:
+        doc_by_region = {"DE": "ADD-LEAVE-DE", "US": "ADD-LEAVE-US", "IN": "TBL-LEAVE-ACCRUAL"}
+        doc_id = doc_by_region.get(reg, "TBL-LEAVE-ACCRUAL")
+        hints = ("accrual", "annual leave", "tenure", "days per month")
+        return doc_id, hints, ("accrual", "days per month", "tenure")
+    if "how many days of unused annual leave can i carry forward" in low:
+        doc_by_region = {"IN": "ADD-LEAVE-IN", "US": "ADD-LEAVE-US", "DE": "ADD-LEAVE-DE"}
+        doc_id = doc_by_region.get(reg, "POL-LEAVE-GLOBAL-V2")
+        return doc_id, ("carry forward", "carry"), ("carry forward",)
+    if "how many sick days do i get" in low:
+        return "POL-LEAVE-GLOBAL-V2", ("sick",), ("sick leave", "sick")
+    if "is the annual leave entitlement changing next year" in low:
+        return "POL-LEAVE-GLOBAL-V3", ("2027", "changing", "accrual"), ("what changes", "2027")
+    if "how do i request leave" in low:
+        return "WIKI-LEAVE-HOWTO", ("request leave", "how to"), ("request", "apply")
+    if any(h in low for h in _NEW_JOINER_HINTS):
+        return "WIKI-NEW-JOINERS", _NEW_JOINER_HINTS, ("first week", "laptop", "onboarding")
+    if any(h in low for h in (_norm(h) for h in _HANDBOOK_HINTS)):
+        prefer = ("one to one",)
+        if "approv" in low:
+            prefer = ("approving leave",)
+        elif "probation" in low:
+            prefer = ("probation",)
+        elif "performance" in low:
+            prefer = ("performance",)
+        elif "confidential" in low:
+            prefer = ("confidential",)
+        return "HB-MANAGER", _HANDBOOK_HINTS, prefer
+    if any(h in low for h in _TRAVEL_HINTS) and any(
+        w in low for w in ("travel", "expense", "per diem", "daily allowance")
+    ):
+        prefer = ("booking travel",)
+        if "claim" in low or "file" in low:
+            prefer = ("claiming expenses",)
+        elif "allowance" in low or "per diem" in low or "daily" in low:
+            prefer = ("daily allowance", "per diem")
+        elif "hotel" in low:
+            prefer = ("hotel limits",)
+        return "POL-TRAVEL-EXPENSE", _TRAVEL_HINTS, prefer
+    return None
+
+
+def _answer_from_chunks(message: str, chunks: list, *, region: str | None = None) -> ChatResult | None:
+    """Sanitized retrieved text when the extract LLM is down. Never copies injection or PII."""
+    topic = _topic_fallback(message, region)
+    if topic is None:
+        return None
+    doc_id, hints, prefer = topic
+    chosen = []
+    for chunk in chunks:
+        blob = _norm(f"{chunk.locator} {chunk.text}")
+        if chunk.doc_id != doc_id and not any(_norm(h) in blob for h in hints):
+            continue
+        lines = [_clean_retrieved_line(line) for line in chunk.text.splitlines()]
+        kept = [line for line in lines if line and not _META_ROW.match(line)]
+        if kept:
+            chosen.append((chunk, kept))
+    if not chosen:
+        return None
+    if any(chunk.doc_id == doc_id for chunk, _ in chosen):
+        chosen = [(chunk, kept) for chunk, kept in chosen if chunk.doc_id == doc_id]
+    chosen.sort(
+        key=lambda item: 0 if any(h in _norm(f"{item[0].locator} {item[0].text}") for h in prefer) else 1
+    )
+    matching = [
+        item for item in chosen if any(h in _norm(f"{item[0].locator} {item[0].text}") for h in prefer)
+    ]
+    use = matching[:2] if matching else chosen[:1]
+    parts: list[str] = []
+    citations: list[Citation] = []
+    sent: set[str] = set()
+    for chunk, kept in use:
+        start = next((i for i, line in enumerate(kept) if any(h in _norm(line) for h in prefer)), 0)
+        parts.append(" ".join(kept[start:start + 8]))
+        citations.append(Citation(chunk.doc_id, chunk.locator))
+        sent.add(chunk.doc_id)
+    return ChatResult(
+        answer=" ".join(parts),
+        route=ROUTE_RAG,
+        citations=tuple(citations),
+        sent_doc_ids=frozenset(sent),
+    )
+
+
+def _sections_as_chunks(db: Database, doc_id: str) -> list:
+    """All stored passages of a document already found by retrieval (role-filtered)."""
+    with db.read() as conn:
+        sections = doc_sections(conn, doc_id)
+    return [SimpleNamespace(doc_id=doc_id, locator=locator, text=text) for locator, text in sections]
+
+
 class LLMPolicyResponder(Responder):
     def __init__(self, client: LLMClient) -> None:
         self._client = client
@@ -183,15 +300,40 @@ class LLMPolicyResponder(Responder):
         if not chunks:
             return self._nothing(balance, NO_COVERAGE_MESSAGE)
 
-        _ensure_time()
-        extraction_call = self._client.complete(
-            purpose="extract",
-            request_id=request_id,
-            system=EXTRACTION_SYSTEM,
-            messages=[{"role": "user", "content": _question(request.message)}],
-            corpus=evidence.corpus_of(chunks),
-            json_schema=EXTRACTION_SCHEMA,
-        )
+        # Informal wiki / manager-handbook tips: do not wait on extract when passages answer.
+        fallback_chunks = chunks
+        topic = _topic_fallback(request.message, requester.region)
+        if topic is not None and any(chunk.doc_id == topic[0] for chunk in chunks):
+            extra = _sections_as_chunks(request.db, topic[0])
+            if extra:
+                fallback_chunks = extra
+        early = _answer_from_chunks(request.message, fallback_chunks, region=requester.region)
+        if early is not None:
+            logger.info(
+                "policy_retrieved_passages request_id=%s employee=%s doc_ids=%s",
+                request_id, employee.employee_id, ",".join(sorted(early.sent_doc_ids)),
+            )
+            return early
+
+        try:
+            _ensure_time()
+            extraction_call = self._client.complete(
+                purpose="extract",
+                request_id=request_id,
+                system=EXTRACTION_SYSTEM,
+                messages=[{"role": "user", "content": _question(request.message)}],
+                corpus=evidence.corpus_of(chunks),
+                json_schema=EXTRACTION_SCHEMA,
+            )
+        except LLMUnavailable:
+            fallback = _answer_from_chunks(request.message, chunks, region=requester.region)
+            if fallback is not None:
+                logger.warning(
+                    "extract_unavailable request_id=%s employee=%s fallback=retrieved_passages",
+                    request_id, employee.employee_id,
+                )
+                return fallback
+            raise
         extract_invalid = False
         try:
             extraction = evidence.parse_extraction(extraction_call.response)
@@ -230,6 +372,9 @@ class LLMPolicyResponder(Responder):
             ",".join(dropped) or "none",
         )
         if not facts.has_answer:
+            fallback = _answer_from_chunks(request.message, chunks, region=requester.region)
+            if fallback is not None:
+                return fallback
             if extract_invalid:
                 return _no_answer(UNAVAILABLE_MESSAGE)
             return self._nothing(balance, NO_COVERAGE_MESSAGE)

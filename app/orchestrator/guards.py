@@ -102,6 +102,8 @@ _SALARY = (
     r"(?:earn|make|get\s+paid|gets\s+paid|paid|receive)\b",
     r"\bwho\s+(?:earns|makes|is\s+paid|gets\s+paid)\b",
     rf"\b{_SALARY_NOUN}\s+(?:list|report|data|details|information|info|sheet|spreadsheet|table|breakdown|ranges?)\b",
+    r"\bwhat are the (?:salary|compensation) bands?\b",
+    r"\b(?:show|tell me)\s+(?:the\s+)?(?:salary|compensation)\s+bands?\b",
 )
 # "Priya's salary" is someone else's; "the company's salary bands" is not a person
 _NOT_A_PERSON = frozenset({"company", "organization", "organisation", "firm", "veltrix", "policy", "it", "that", "what", "who", "there", "here"})

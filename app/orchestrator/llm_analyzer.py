@@ -30,7 +30,11 @@ from app.orchestrator.analyzer import (
     Understanding,
 )
 from app.orchestrator.prompts import ANALYSIS_SCHEMA, ANALYZER_SYSTEM
-from app.orchestrator.tool_intent import extract_mentioned_employee_id, match_unambiguous_tool
+from app.orchestrator.tool_intent import (
+    extract_mentioned_employee_id,
+    match_unambiguous_policy,
+    match_unambiguous_tool,
+)
 
 logger = logging.getLogger("app.orchestrator.llm_analyzer")
 
@@ -84,7 +88,7 @@ class LLMAnalyzer(Analyzer):
 
     def analyze(self, message: str, session_context: SessionContext) -> Understanding:
         request_id = session_context.request_id or str(uuid.uuid4())
-        shortcut = match_unambiguous_tool(message)
+        shortcut = match_unambiguous_tool(message) or match_unambiguous_policy(message)
         if shortcut is not None:
             logger.info("analyze_skipped request_id=%s reason=unambiguous_tool intent=%s", request_id, shortcut.intent)
             return shortcut

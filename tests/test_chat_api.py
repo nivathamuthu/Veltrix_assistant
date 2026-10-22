@@ -643,6 +643,74 @@ def test_apply_with_nothing_given_asks_for_everything_in_one_message(chat):
     assert chat.proposals() == [] and len(chat.analyzer.calls) == 1
 
 
+def test_apply_leave_on_monday_asks_only_for_type_and_shows_balance(chat):
+    body = body_of(chat.say("apply leave on monday", understanding=Q("apply_leave", dates_text="on monday")))
+    assert body["route"] == "clarify" and body["tool_calls"] == [] and chat.proposals() == []
+    low = body["answer"].lower()
+    assert "leave type" in low and "dates" not in low
+    assert "2026-10-19" in body["answer"]
+    assert "annual 10 days" in low and "sick 5 days" in low
+
+
+def test_sick_leave_balance_phrases_do_not_start_an_apply(chat):
+    for message in ("What is my sick leave balance?", "balance of sick leave", "sick leave balance"):
+        body = body_of(chat.post(message, session="s-sick-bal"))
+        assert body["route"] == "tool", (message, body["answer"])
+        assert body["tool_calls"][0]["name"] == "get_leave_balance"
+        assert "sick" in body["answer"].lower()
+        assert "5" in body["answer"]
+
+
+def test_annual_leave_on_iso_date_proposes_without_saying_apply(chat):
+    body = body_of(chat.post("annual leave on 2026-10-26", session="s-iso"))
+    assert body["route"] == "tool" and body["pending_confirmation"] is True
+    assert body["tool_calls"][0]["args"] == {
+        "leave_type": "annual", "start_date": "2026-10-26", "end_date": "2026-10-26",
+    }
+    assert "balance" in body["answer"].lower()
+
+
+def test_anual_typo_and_iso_date_still_proposes(chat):
+    body = body_of(chat.post("anual leave on 2026-10-26", session="s-typo"))
+    assert body["pending_confirmation"] is True
+    assert body["tool_calls"][0]["args"]["leave_type"] == "annual"
+    assert body["tool_calls"][0]["args"]["start_date"] == "2026-10-26"
+
+
+def test_hyphenated_numeric_date_stays_ambiguous_and_explains_the_format(chat):
+    body = body_of(chat.post("annual leave 26-10-2026", session="s-dmy"))
+    low = body["answer"].lower()
+    assert body["route"] == "clarify" and "ambiguous" in low
+    assert "2026-10-26" in body["answer"] or "26 october" in low
+    follow = body_of(chat.post("only monday", session="s-dmy"))
+    assert follow["pending_confirmation"] is True
+    assert follow["tool_calls"][0]["args"] == {
+        "leave_type": "annual", "start_date": "2026-10-19", "end_date": "2026-10-19",
+    }
+
+
+def test_apply_leave_on_monday_then_the_type_proposes_and_shows_remaining_balance(chat):
+    body_of(chat.say(
+        "apply leave on monday", understanding=Q("apply_leave", dates_text="on monday"), session="s-mon"
+    ))
+    calls = len(chat.analyzer.calls)
+    proposal = body_of(chat.post("annual", session="s-mon"))
+    assert len(chat.analyzer.calls) == calls
+    assert proposal["route"] == "tool" and proposal["pending_confirmation"] is True
+    assert proposal["tool_calls"] == [
+        {
+            "name": "apply_leave",
+            "args": {"leave_type": "annual", "start_date": "2026-10-19", "end_date": "2026-10-19"},
+            "status": "pending_confirmation",
+        }
+    ]
+    low = proposal["answer"].lower()
+    assert "balance" in low and "from 10 to 9" in low
+    done = body_of(chat.post("yes", session="s-mon"))
+    assert "balance is now 9" in done["answer"].lower()
+    assert chat.balance("E1", "annual") == 9.0
+
+
 def test_apply_without_a_leave_type_never_assumes_one(chat):
     before = chat.leave_tables()
     body = body_of(chat.say("leave 19-21 October", understanding=Q("apply_leave", dates_text="from 19 October to 21 October")))

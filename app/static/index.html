@@ -36,8 +36,9 @@
       margin: 0 auto;
       padding: 12px;
       display: grid;
-      grid-template-columns: 280px 1fr;
+      grid-template-columns: 300px 1fr;
       gap: 12px;
+      min-height: 0;
     }
     .rail, .phone {
       background: var(--panel);
@@ -45,16 +46,18 @@
       min-height: 0;
     }
     .rail {
-      padding: 14px;
+      padding: 12px;
       display: flex;
       flex-direction: column;
-      gap: 14px;
-      overflow: auto;
+      gap: 10px;
+      overflow: hidden;
     }
+    .signin { flex: none; }
     .phone {
       display: grid;
-      grid-template-rows: auto 1fr auto;
+      grid-template-rows: auto minmax(0, 1fr) auto;
       overflow: hidden;
+      min-height: 0;
     }
     .bot-bar {
       display: flex;
@@ -118,16 +121,18 @@
     .badge.role-manager { border-color: var(--manager); color: var(--manager); }
     .badge.role-hr { border-color: var(--hr); color: var(--hr); }
     .whoami.bad { color: var(--bad); font-size: 13px; }
-    .scope-box { padding: 10px; border: 1px solid var(--line); }
-    .scope-title { font-size: 15px; margin: 0 0 8px; }
-    .can-list { margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
-    .can-list li { margin: 0 0 4px; }
+    .scope-box { padding: 8px 10px; border: 1px solid var(--line); }
+    .scope-title { font-size: 14px; margin: 0 0 4px; }
+    .can-list { margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 12px; line-height: 1.4; }
+    .can-list li { margin: 0 0 2px; }
     .cannot { color: var(--bad); }
     .session-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; }
     .hint { margin: 6px 0 0; font-size: 12px; color: var(--ink-soft); line-height: 1.35; }
+    details.more { margin-top: 6px; font-size: 12px; color: var(--ink-soft); }
     #session { font-size: 12px; word-break: break-all; }
     .thread {
       overflow: auto;
+      min-height: 0;
       padding: 16px 14px;
       display: flex;
       flex-direction: column;
@@ -137,9 +142,9 @@
         #f3f8f6;
     }
     .empty { margin: auto; max-width: 420px; text-align: center; color: var(--ink-soft); }
-    .empty h2 { margin: 10px 0 6px; font-size: 22px; color: var(--ink); }
-    .cards { display: grid; gap: 8px; margin-top: 12px; text-align: left; }
-    .card { padding: 10px 12px; background: #fff; border: 1px solid var(--line); }
+    .empty h2 { margin: 8px 0 6px; font-size: 20px; color: var(--ink); }
+    .cards { display: grid; gap: 8px; margin-top: 10px; text-align: left; }
+    .card { padding: 8px 10px; background: #fff; border: 1px solid var(--line); }
     .card h3 { margin: 0 0 4px; font-size: 13px; }
     .card p { margin: 0; font-size: 13px; line-height: 1.4; }
     .row { display: flex; align-items: flex-end; gap: 8px; max-width: min(680px, 94%); }
@@ -188,9 +193,24 @@
     .source-id { font-size: 13px; font-weight: 700; color: var(--bot-deep); word-break: break-word; }
     .source-loc { font-size: 12px; color: var(--ink-soft); word-break: break-word; }
     .used { margin-top: 8px; font-size: 12px; color: var(--ink-soft); }
-    .dock { padding: 10px 12px 12px; border-top: 1px solid var(--line); background: #fff; }
-    .hint-group { margin-bottom: 8px; }
-    .hints { display: flex; flex-wrap: wrap; gap: 6px; }
+    .dock { padding: 10px 12px 12px; border-top: 1px solid var(--line); background: #fff; flex: none; }
+    .hint-board {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+    }
+    .plan-title { margin: 0 0 8px; font-size: 13px; font-weight: 650; }
+    .hint-group { margin-bottom: 10px; }
+    .hint-group .kicker { margin-bottom: 6px; }
+    .hints { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+    .hint-board .chip {
+      border-radius: 10px;
+      text-align: left;
+      white-space: normal;
+      line-height: 1.35;
+    }
     .composer {
       display: grid;
       grid-template-columns: 1fr auto;
@@ -223,37 +243,46 @@
     .send:not(:disabled):hover { background: var(--bot-deep); }
     .confirm { margin-top: 8px; border-color: var(--ok); color: var(--ok); }
     @media (max-width: 860px) {
-      .app { grid-template-columns: 1fr; padding: 0; }
-      .rail { max-height: 42vh; }
+      .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 34vh) 1fr; padding: 0; }
+      .rail { max-height: none; }
+      .phone { min-height: 0; }
     }
   </style>
 </head>
 <body>
   <div class="app">
     <aside class="rail">
-      <section>
+      <section class="signin">
         <p class="kicker">Sign in</p>
         <label for="employee">Employee id</label>
         <input id="employee" maxlength="32" autocomplete="off" spellcheck="false" placeholder="X-Employee-Id">
         <div class="whoami" id="whoami" style="margin-top:8px">Role and region load from the directory.</div>
         <div class="who" id="presets" style="margin-top:8px"></div>
-        <label for="session" style="margin-top:14px">Session</label>
-        <div class="session-row">
-          <input id="session" maxlength="128" autocomplete="off" spellcheck="false" placeholder="This chat’s session id">
+        <div class="session-row" style="margin-top:10px">
+          <div>
+            <label for="session">Session</label>
+            <input id="session" maxlength="128" autocomplete="off" spellcheck="false" placeholder="This chat’s session id">
+          </div>
           <button class="ghost" id="new-session" type="button">New chat</button>
         </div>
-        <p class="hint">Shown on purpose. The same session keeps this conversation (and a pending apply/cancel). A different employee cannot reuse it. New chat starts a blank thread.</p>
+        <details class="more">
+          <summary>Session stays with this chat</summary>
+          <p class="hint">Shown on purpose. The same session keeps this conversation (and a pending apply/cancel). A different employee cannot reuse it. New chat starts a blank thread.</p>
+        </details>
+        <section id="identity-card" style="margin-top:10px">
+          <p class="kicker">You are</p>
+          <p class="id-line" id="id-line">—</p>
+          <div class="badges" id="id-badges"></div>
+        </section>
+        <section class="scope-box" id="scope" style="margin-top:10px">
+          <p class="kicker">What you can do</p>
+          <details class="more">
+            <summary class="scope-title" id="scope-title">Your leave only</summary>
+            <ul class="can-list" id="scope-list"></ul>
+          </details>
+        </section>
       </section>
-      <section id="identity-card">
-        <p class="kicker">You are</p>
-        <p class="id-line" id="id-line">—</p>
-        <div class="badges" id="id-badges"></div>
-      </section>
-      <section class="scope-box" id="scope">
-        <p class="kicker">What you can do</p>
-        <h2 class="scope-title" id="scope-title">Your leave only</h2>
-        <ul class="can-list" id="scope-list"></ul>
-      </section>
+      <section class="hint-board" id="hint-board" aria-label="Suggested questions"></section>
     </aside>
 
     <section class="phone">
@@ -267,7 +296,6 @@
       </header>
       <main class="thread" id="thread" aria-live="polite"></main>
       <footer class="dock">
-        <div id="hint-board"></div>
         <form class="composer" id="form">
           <textarea id="message" maxlength="4000" rows="1" placeholder="Message PeopleOps…"></textarea>
           <button class="send" id="send" type="submit" aria-label="Send">➤</button>
@@ -276,13 +304,8 @@
     </section>
   </div>
   <script>
-    const PRESETS = [
-      { id: "E2004", label: "E2004 employee IN" },
-      { id: "E3004", label: "E3004 employee US" },
-      { id: "E4004", label: "E4004 employee DE" },
-      { id: "E2001", label: "E2001 manager IN" },
-      { id: "E1001", label: "E1001 HR IN" },
-    ];
+    let signinPresets = [];
+    let hrLookupExampleId = "";
 
     function scopeFor(role) {
       if (role === "manager") {
@@ -319,25 +342,84 @@
       };
     }
 
-    function hintsFor(role) {
+    function hintsFor(role, lookupId) {
+      const exampleId = lookupId || hrLookupExampleId || "employee_id";
       const mine = {
         title: "My leave",
-        items: ["What is my annual leave balance?", "Show my pending leave requests."],
+        items: [
+          "What is my annual leave balance?",
+          "What is my sick leave balance?",
+          "Show my pending leave requests.",
+          "Apply for annual leave on 26 October",
+          "Apply for sick leave tomorrow",
+        ],
       };
-      const policy = {
-        title: "Policy and holidays",
+      const leavePolicy = {
+        title: "Leave policy",
         items: [
           "How many days of annual leave do employees in my region get?",
           "How many days of unused annual leave can I carry forward?",
           "How many sick days do I get?",
-          "What public holidays does my office observe?",
+          "Is the annual leave entitlement changing next year?",
+          "How do I request leave?",
+        ],
+      };
+      const wfh = {
+        title: "Work from home",
+        items: [
           "What is the work-from-home policy?",
         ],
       };
-      const groups = [mine];
-      if (role === "manager") groups.push({ title: "Team leave", items: ["Who in my team is on leave next week?"] });
-      if (role === "hr") groups.push({ title: "Look up one person", items: ["What is E2004's annual leave balance?"] });
-      groups.push(policy);
+      const joiners = {
+        title: "New joiners",
+        items: [
+          "What should new joiners do in their first week?",
+          "Where do new joiners pick up their laptop?",
+          "What are the tips for new joiners?",
+        ],
+      };
+      const travel = {
+        title: "Travel expenses",
+        items: [
+          "What is the travel and expense policy?",
+          "How do I book business travel?",
+          "How long do I have to file a travel expense claim?",
+          "What is the daily allowance for business travel?",
+        ],
+      };
+      const holidays = {
+        title: "Holidays",
+        items: ["What public holidays does my office observe?"],
+      };
+      const groups = [mine, leavePolicy, wfh, joiners, travel, holidays];
+      if (role === "manager") {
+        groups.splice(
+          1,
+          0,
+          {
+            title: "Team leave",
+            items: [
+              "Who in my team is on leave next week?",
+              "Who on my team is on leave today?",
+            ],
+          },
+          {
+            title: "Manager handbook",
+            items: [
+              "What does the manager handbook say about approving leave?",
+              "What does the manager handbook say about probation reviews?",
+              "What does the manager handbook say about one to ones?",
+              "What does the manager handbook say about performance concerns?",
+            ],
+          },
+        );
+      }
+      if (role === "hr") {
+        groups.splice(1, 0, {
+          title: "Look up one person",
+          items: ["What is " + exampleId + "'s annual leave balance?"],
+        });
+      }
       return groups;
     }
 
@@ -358,9 +440,48 @@
     }
 
     function load() {
-      employee.value = localStorage.getItem("veltrix.employee") || "E2004";
+      const saved = localStorage.getItem("veltrix.employee");
+      employee.value = saved || "";
       session.value = localStorage.getItem("veltrix.session") || uid();
+      if (!saved && signinPresets.length) employee.value = signinPresets[0].employee_id;
       persist();
+    }
+
+    function renderPresetChips() {
+      const host = $("presets");
+      host.replaceChildren();
+      signinPresets.forEach((p) => {
+        const btn = el("button", { class: "chip", type: "button" }, p.label);
+        btn.dataset.id = p.employee_id;
+        btn.addEventListener("click", () => {
+          employee.value = p.employee_id;
+          session.value = uid();
+          persist();
+          showEmpty();
+          loadProfile();
+        });
+        host.append(btn);
+      });
+      persist();
+    }
+
+    async function loadSigninPresets() {
+      try {
+        const res = await fetch("/signin-presets");
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !Array.isArray(data.presets)) return;
+        signinPresets = data.presets;
+        hrLookupExampleId = data.hr_lookup_example_id || "";
+        renderPresetChips();
+        const saved = localStorage.getItem("veltrix.employee");
+        if (!saved && signinPresets.length) {
+          employee.value = signinPresets[0].employee_id;
+          persist();
+          loadProfile();
+        }
+      } catch {
+        /* optional UI: manual employee id still works */
+      }
     }
 
     function persist() {
@@ -409,7 +530,8 @@
     function renderHints() {
       const board = $("hint-board");
       board.replaceChildren();
-      hintsFor(profile && profile.role).forEach((group) => {
+      board.append(el("p", { class: "plan-title" }, "Ask — pick a question"));
+      hintsFor(profile && profile.role, hrLookupExampleId).forEach((group) => {
         const wrap = el("div", { class: "hint-group" });
         wrap.append(el("p", { class: "kicker" }, group.title));
         const row = el("div", { class: "hints" });
@@ -463,17 +585,9 @@
       box.append(el("h2", {}, "PeopleOps"));
       box.append(el("p", {}, "Questions use the signed-in employee id. Role and region come from the directory, not from the message."));
       const cards = el("div", { class: "cards" });
-      const mine = el("div", { class: "card" });
-      mine.append(el("h3", {}, "My leave"), el("p", {}, "Balance, requests, apply, and cancel — for you only. Apply needs Yes, confirm."));
-      cards.append(mine);
-      const visibility = el("div", { class: "card" });
-      visibility.append(el("h3", {}, scope.title), el("p", {}, scope.items[0].text + " " + (scope.items[1] ? scope.items[1].text : "")));
-      cards.append(visibility);
-      if (role === "manager") {
-        const noApprove = el("div", { class: "card" });
-        noApprove.append(el("h3", {}, "No approvals"), el("p", {}, "Managers can view team leave. This desk does not approve a request."));
-        cards.append(noApprove);
-      }
+      const plan = el("div", { class: "card" });
+      plan.append(el("h3", {}, "Ask from the plan"), el("p", {}, "Chips stay on the left. Chat stays here. " + scope.title + "."));
+      cards.append(plan);
       box.append(cards);
       thread.append(box);
     }
@@ -489,20 +603,6 @@
       if (extras && extras.pending) meta.append(el("span", { class: "badge" }, "needs your confirmation"));
       card.append(meta);
       card.append(el("div", { class: extras && extras.error ? "answer error" : "answer" }, text));
-      const cites = (extras && extras.citations) || [];
-      if (cites.length) {
-        const box = el("div", { class: "sources" });
-        box.append(el("p", { class: "sources-title" }, cites.length === 1 ? "Source" : "Sources"));
-        const list = el("div", { class: "source-list" });
-        cites.forEach((c) => {
-          const item = el("div", { class: "source" });
-          item.append(el("div", { class: "source-id" }, c.doc_id || "Document"));
-          item.append(el("div", { class: "source-loc" }, c.locator ? "Section: " + c.locator : "Full document"));
-          list.append(item);
-        });
-        box.append(list);
-        card.append(box);
-      }
       const tools = (extras && extras.tools) || [];
       if (tools.length) {
         const used = el("div", { class: "used" }, "Used: " + tools.map((t) => (t.name || "tool") + " (" + (t.status || "") + ")").join(", "));
@@ -580,18 +680,6 @@
       }
     }
 
-    PRESETS.forEach((p) => {
-      const btn = el("button", { class: "chip", type: "button" }, p.label);
-      btn.dataset.id = p.id;
-      btn.addEventListener("click", () => {
-        employee.value = p.id;
-        session.value = uid();
-        persist();
-        showEmpty();
-        loadProfile();
-      });
-      $("presets").append(btn);
-    });
     employee.addEventListener("change", () => {
       session.value = uid();
       persist();
@@ -618,7 +706,7 @@
     load();
     renderScope();
     showEmpty();
-    loadProfile();
+    loadSigninPresets().then(() => loadProfile());
     ping();
     setInterval(ping, 5000);
   </script>

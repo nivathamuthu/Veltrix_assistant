@@ -1,13 +1,21 @@
-FROM python:3.11-slim
+# Bookworm pin: stable Debian mirrors; avoids surprise base moves to trixie.
+FROM python:3.11-slim-bookworm
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
 # OCR (tesseract) and PDF page rasterising (poppler) for scanned documents.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
+# Retries help when Docker build networking to deb.debian.org is briefly unavailable.
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+        apt-get update \
+        && apt-get install -y --no-install-recommends tesseract-ocr poppler-utils \
+        && break; \
+        echo "apt attempt ${attempt} failed; retrying in 15s..." >&2; \
+        sleep 15; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

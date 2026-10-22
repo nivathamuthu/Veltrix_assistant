@@ -29,12 +29,25 @@ def test_root_serves_the_chat_ui(settings, fake_embedder):
         assert "New chat" in response.text
         assert 'id="scope"' in response.text
         assert "/me" in response.text
-        assert "E4004" in response.text
+        assert "/signin-presets" in response.text
         assert "direct reports" in response.text
         assert "cannot approve" in response.text
         assert "Who in my team is on leave next week?" in response.text
-        assert "source-id" in response.text
-        assert "Section: " in response.text
+        assert "Who on my team is on leave today?" in response.text
+        assert "Manager handbook" in response.text
+        assert "What does the manager handbook say about one to ones?" in response.text
+        assert "What does the manager handbook say about approving leave?" in response.text
+        assert "Travel expenses" in response.text
+        assert "How long do I have to file a travel expense claim?" in response.text
+        assert "Apply for annual leave on 26 October" in response.text
+        assert "Apply for sick leave tomorrow" in response.text
+        assert "What is my sick leave balance?" in response.text
+        assert "Leave policy" in response.text
+        assert "Work from home" in response.text
+        assert "New joiners" in response.text
+        assert "What should new joiners do in their first week?" in response.text
+        assert "How do I request leave?" in response.text
+        assert "Is the annual leave entitlement changing next year?" in response.text
 
 
 def test_health_is_503_until_ingestion_finishes_then_200(settings, monkeypatch, fake_embedder):
@@ -98,6 +111,20 @@ def test_missing_embedding_model_fails_clearly_and_stays_503(settings, monkeypat
         response = client.get("/health")
         assert response.status_code == 503
         assert "EMBED" not in response.text  # nothing internal on the public endpoint
+
+
+def test_signin_presets_come_from_the_database(settings, fake_embedder):
+    """TASK §2.3: UI shortcuts must not hard-code evaluator employee ids."""
+    app = create_app(settings, embedder=fake_embedder)
+    with TestClient(app) as client:
+        response = client.get("/signin-presets")
+        assert response.status_code == 200
+        body = response.json()
+        assert isinstance(body.get("presets"), list) and body["presets"]
+        assert body.get("hr_lookup_example_id")
+        for item in body["presets"]:
+            assert item.get("employee_id") and item.get("role") and item.get("region")
+            assert "full_name" not in item and "email" not in item
 
 
 def test_ingestion_primes_log_redactor_from_db(settings, fake_embedder):

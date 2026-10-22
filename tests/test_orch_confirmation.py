@@ -112,7 +112,7 @@ def test_a_valid_apply_stores_one_proposal_and_asks_for_confirmation(env):
     assert [(c.name, c.status) for c in result.tool_calls] == [("apply_leave", "pending_confirmation")]
     assert result.tool_calls[0].args == {"leave_type": "annual", "start_date": START, "end_date": END}
     answer = result.answer.lower()
-    for expected in ("annual", START, END, "3 working day", "confirm"):
+    for expected in ("annual", START, END, "3 working day", "confirm", "balance"):
         assert expected in answer, (expected, result.answer)
     assert "an annual" in answer
     assert "a annual" not in answer
@@ -259,6 +259,7 @@ def test_confirming_an_apply_writes_the_request_and_deletes_the_proposal(env):
     assert get_pending("s1", db=env.db) is None
     answer = result.answer.lower()
     assert "annual" in answer and "pending" in answer and "3 working day" in answer
+    assert "balance is now 7" in answer
 
 
 def test_confirming_twice_applies_only_once(env):

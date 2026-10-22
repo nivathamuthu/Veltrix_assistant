@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 import pytest
 
@@ -9,7 +10,7 @@ from app.llm.client import LLMClient, begin_message
 from app.llm.providers.base import LLMUnavailable
 from app.orchestrator.analyzer import SessionContext, Understanding
 from app.orchestrator.llm_analyzer import LLMAnalyzer, build_user_message, understanding_from
-from app.orchestrator.tool_intent import match_unambiguous_tool
+from app.orchestrator.tool_intent import match_unambiguous_policy, match_unambiguous_tool
 from app.orchestrator.prompts import ANALYSIS_SCHEMA, ANALYZER_SYSTEM
 from tests.mock_provider import MockProvider, analysis
 
@@ -30,6 +31,13 @@ def test_an_unambiguous_own_balance_question_does_not_call_the_model():
     provider = MockProvider(analysis("other"))
     result = run(provider, "What is my annual leave balance?")
     assert result.intent == "leave_balance" and result.leave_type == "annual"
+    assert provider.calls == []
+
+
+def test_new_joiner_chip_does_not_call_the_analyzer():
+    provider = MockProvider(error=LLMUnavailable("timeout"))
+    result = run(provider, "What should new joiners do in their first week?")
+    assert result.intent == "policy_question"
     assert provider.calls == []
 
 
@@ -125,12 +133,20 @@ def test_nothing_personal_is_logged(caplog):
     "message, intent",
     [
         ("What is my annual leave balance?", "leave_balance"),
+        ("What is my sick leave balance?", "leave_balance"),
         ("What is my leave balance?", "leave_balance"),
+        ("balance of sick leave", "leave_balance"),
+        ("sick leave balance", "leave_balance"),
+        ("my sick balance", "leave_balance"),
         ("What is E-NOBODY's leave balance?", "leave_balance"),
         ("Show my pending leave requests.", "list_requests"),
         ("Who in my team is on leave next week?", "team_leave"),
+        ("Who on my team is on leave today?", "team_leave"),
+        ("Who on my team is on leave?", "team_leave"),
         ("I want to apply for annual leave from next Monday to next Wednesday.", "apply_leave"),
         ("Apply for annual leave this Saturday through Sunday.", "apply_leave"),
+        ("apply leave on monday", "apply_leave"),
+        ("Apply for leave tomorrow", "apply_leave"),
         ("Cancel leave request R1", "cancel_leave"),
     ],
 )
@@ -139,6 +155,24 @@ def test_unambiguous_tool_messages_are_classified_in_code(message, intent):
     assert result is not None and result.intent == intent
     if "E-NOBODY" in message:
         assert result.target_employee_id == "E-NOBODY"
+    if "sick" in message.lower() and intent == "leave_balance":
+        assert result.leave_type == "sick"
+
+
+def test_apply_leave_on_monday_keeps_the_date_and_does_not_guess_a_type():
+    from app.orchestrator.tool_intent import match_apply_fragment
+
+    result = match_unambiguous_tool("apply leave on monday")
+    assert result is not None and result.intent == "apply_leave"
+    assert result.leave_type is None and result.dates_text == "on monday"
+    assert "leave_type" in result.missing_fields
+
+    fragment = match_apply_fragment("annual", date(2026, 10, 15))
+    assert fragment is not None and fragment.leave_type == "annual"
+    typo = match_apply_fragment("anual leave on 2026-10-26", date(2026, 10, 15))
+    assert typo is not None and typo.leave_type == "annual" and "2026-10-26" in (typo.dates_text or "")
+    only = match_apply_fragment("only monday", date(2026, 10, 15))
+    assert only is not None and only.dates_text == "monday"
 
 
 def test_a_written_employee_id_is_kept_even_when_the_model_asks_for_one():
@@ -162,3 +196,28 @@ def test_a_written_employee_id_is_kept_even_when_the_model_asks_for_one():
 )
 def test_policy_and_mixed_messages_are_not_short_circuited(message):
     assert match_unambiguous_tool(message) is None
+
+
+@pytest.mark.parametrize(
+    "message, intent",
+    [
+        ("What should new joiners do in their first week?", "policy_question"),
+        ("Where do new joiners pick up their laptop?", "policy_question"),
+        ("What are the tips for new joiners?", "policy_question"),
+        ("What is the work-from-home policy?", "policy_question"),
+        ("How do I request leave?", "policy_question"),
+        ("What public holidays does my office observe?", "holiday_question"),
+        ("What does the manager handbook say about one to ones?", "policy_question"),
+        ("What does the manager handbook say about approving leave?", "policy_question"),
+        ("What does the manager handbook say about probation reviews?", "policy_question"),
+        ("What does the manager handbook say about performance concerns?", "policy_question"),
+        ("What is in the People Manager Handbook?", "policy_question"),
+        ("What is the travel and expense policy?", "policy_question"),
+        ("How do I book business travel?", "policy_question"),
+        ("How long do I have to file a travel expense claim?", "policy_question"),
+        ("What is the daily allowance for business travel?", "policy_question"),
+    ],
+)
+def test_unambiguous_policy_chips_are_classified_in_code(message, intent):
+    result = match_unambiguous_policy(message)
+    assert result is not None and result.intent == intent
